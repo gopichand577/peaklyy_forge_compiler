@@ -18,6 +18,7 @@
   - HTML (`.html`)
   - CSS (`.css`)
   - C++ (`.cpp`)
+<img width="551" height="487" alt="image" src="https://github.com/user-attachments/assets/5bd89235-96ed-4dcc-9523-254002db78e3" />
 
 ### 2. Algorithmic Challenge & Judge Platform (Practice Mode)
 - **Problem Catalog**: Filter by topics (Arrays, DP, Strings, Math, etc.), difficulty levels (Easy, Medium, Hard), and completion status.
