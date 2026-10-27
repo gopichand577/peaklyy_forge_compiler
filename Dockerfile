@@ -15,18 +15,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy server package definitions
-COPY server/package*.json ./server/
-
-# Install server production dependencies
-WORKDIR /app/server
-RUN npm ci --omit=dev || npm install --omit=dev
-
-# Copy server source code
-WORKDIR /app
+# Copy server application
 COPY server ./server
 
+# Install server production dependencies
+# Skip postinstall script (--ignore-scripts) since OpenJDK is pre-installed via apt
 WORKDIR /app/server
+RUN npm ci --omit=dev --ignore-scripts || npm install --omit=dev --ignore-scripts
 
 ENV PORT=5000
 ENV NODE_ENV=production
