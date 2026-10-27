@@ -13,16 +13,19 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { TARGET_LANGUAGES, languageMeta } from "../../constants/languages";
 import { useEditor } from "../../context/EditorContext";
 import LanguageIcon from "../common/LanguageIcon";
 
-const availableLanguages = [
-  { id: "python", label: "Python", ext: "py", color: "#387eb8" },
-  { id: "java", label: "Java", ext: "java", color: "#e76f00" },
-  { id: "javascript", label: "JavaScript", ext: "js", color: "#f7df1e" },
-  { id: "html", label: "HTML", ext: "html", color: "#e44d26" },
-  { id: "css", label: "CSS", ext: "css", color: "#264de4" },
-];
+const availableLanguages = TARGET_LANGUAGES.map((key) => {
+  const meta = languageMeta[key] || {};
+  return {
+    id: key,
+    label: meta.label || key,
+    ext: meta.extension || "py",
+    color: meta.badgeColor || "#ff3b4a",
+  };
+});
 
 export default function ProjectModal() {
   const {
@@ -91,28 +94,33 @@ export default function ProjectModal() {
   const handleSubmit = (e) => {
     e.preventDefault();
     if (creationMode === "file") {
-      const selectedExt = availableLanguages.find((l) => l.id === selectedLang)?.ext || "py";
+      const currentMeta = languageMeta[selectedLang] || languageMeta.python;
+      const selectedExt = currentMeta.extension || "py";
       let finalFileName = name.trim();
       if (!finalFileName) {
-        finalFileName = `file_${Date.now().toString().slice(-4)}.${selectedExt}`;
+        finalFileName = currentMeta.defaultFileName || `main.${selectedExt}`;
       } else if (!finalFileName.includes(".")) {
         finalFileName = `${finalFileName}.${selectedExt}`;
       }
 
       // Check for duplicate names
-      const isDuplicate = projects.some(
+      const existing = projects.find(
         (p) => p?.name?.toLowerCase() === finalFileName.toLowerCase() || (p?.files || []).some((f) => f.name?.toLowerCase() === finalFileName.toLowerCase())
       );
 
-      if (isDuplicate) {
-        showToast(`A file or project named "${finalFileName}" already exists. Please choose a different name.`, "error");
+      if (existing) {
+        openProject(existing.id);
+        setProjectDialogOpen(false);
+        showToast(`Opened existing workspace "${finalFileName}".`, "info");
+        setName("");
         return;
       }
 
       createIndividualFile(finalFileName, null, selectedLang);
       setProjectDialogOpen(false);
     } else {
-      const finalName = name.trim() || `Untitled ${selectedLang} project`;
+      const currentMeta = languageMeta[selectedLang] || languageMeta.python;
+      const finalName = name.trim() || `Untitled ${currentMeta.label || selectedLang} Project`;
       createProject(finalName, selectedLang);
       setProjectDialogOpen(false);
     }
@@ -272,8 +280,8 @@ export default function ProjectModal() {
                 onChange={(e) => setName(e.target.value)}
                 placeholder={
                   creationMode === "project"
-                    ? "Name your new project (e.g., Quick Script, Math Matrix)..."
-                    : "File name with extension (e.g., script.py, app.js, index.html)..."
+                    ? `Name your new ${languageMeta[selectedLang]?.label || selectedLang} project (e.g., My${languageMeta[selectedLang]?.label || "App"})...`
+                    : `File name (e.g., main.${languageMeta[selectedLang]?.extension || "py"}, solution.${languageMeta[selectedLang]?.extension || "py"})...`
                 }
                 className="project-name-input"
                 autoFocus
@@ -440,7 +448,8 @@ export default function ProjectModal() {
                           <span className="project-meta-lang">{langInfo.label}</span>
                           <span className="meta-separator">•</span>
                           <span className="project-meta-files">
-                            {item.files?.length || 1} {item.files?.length === 1 ? "file" : "files"}
+                            {Array.isArray(item.files) ? item.files.length : 1}{" "}
+                            {(Array.isArray(item.files) ? item.files.length : 1) === 1 ? "file" : "files"}
                             {item.files && item.files.length > 0
                               ? ` (${item.files.map((f) => f.name).join(", ")})`
                               : ""}

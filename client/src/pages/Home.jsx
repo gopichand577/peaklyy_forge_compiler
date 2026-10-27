@@ -1,8 +1,10 @@
-import { Download, FolderOpen, Plus, Upload } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { Download, FolderOpen, Minimize2, Plus, Upload } from "lucide-react";
+import React, { useEffect, useRef } from "react";
 import CommandPalette from "../components/common/CommandPalette";
-import { ColumnSplitter, RowSplitter } from "../components/common/SplitterHandle";
+import ConfirmModal from "../components/common/ConfirmModal";
+import LanguageIcon from "../components/common/LanguageIcon";
 import SettingsModal from "../components/common/SettingsModal";
+import { ColumnSplitter, RowSplitter } from "../components/common/SplitterHandle";
 import Toast from "../components/common/Toast";
 import Output from "../components/console/Output";
 import Editor from "../components/editor/Editor";
@@ -10,13 +12,11 @@ import LanguageSelector from "../components/editor/LanguageSelector";
 import RunButton from "../components/editor/RunButton";
 import Navbar from "../components/layout/Navbar";
 import Sidebar from "../components/layout/Sidebar";
-import MonitoringView from "../components/monitoring/MonitoringView";
-import PracticeView from "../components/practice/PracticeView";
-import ProfileView from "../components/profile/ProfileView";
-import SettingsView from "../components/settings/SettingsView";
 import Preview from "../components/preview/Preview";
+import ProfileView from "../components/profile/ProfileView";
 import ProjectModal from "../components/projects/ProjectModal";
-import { useEditor } from "../context/EditorContext";
+import SettingsView from "../components/settings/SettingsView";
+import { getFileLanguage, useEditor } from "../context/EditorContext";
 import { useResizable } from "../utils/useResizable";
 import "../App.css";
 
@@ -24,17 +24,24 @@ export default function Home() {
   const {
     activeNav,
     project,
+    activeFile,
     runCode,
     setProjectDialogOpen,
     importProject,
     importLocalFolder,
-    setIsCommandPaletteOpen,
-    setIsSettingsOpen,
+    setCommandPaletteOpen,
+    setSettingsOpen,
     showToast,
+    isFullscreen,
+    toggleFullscreen,
+    confirmModal,
+    closeConfirmModal,
   } = useEditor();
+
   const uploadRef = useRef(null);
   const folderUploadRef = useRef(null);
 
+  // Normal Compiler Splitters
   const {
     split: compilerSplitX,
     startResize: startCompilerResizeX,
@@ -42,9 +49,9 @@ export default function Home() {
     containerRef: compilerWorkspaceRef,
     isDragging: isDraggingCompilerX,
   } = useResizable({
-    initialSplit: 52,
-    min: 22,
-    max: 78,
+    initialSplit: 55,
+    min: 25,
+    max: 75,
     direction: "horizontal",
     storageKey: "peaklyy-compiler-split-x",
   });
@@ -56,18 +63,48 @@ export default function Home() {
     containerRef: compilerMainRef,
     isDragging: isDraggingCompilerY,
   } = useResizable({
-    initialSplit: 64,
+    initialSplit: 62,
     min: 25,
     max: 82,
     direction: "vertical",
     storageKey: "peaklyy-compiler-split-y",
   });
 
+  // Fullscreen Compiler Splitters
+  const {
+    split: fullscreenSplitX,
+    startResize: startFullscreenResizeX,
+    resetSplit: resetFullscreenSplitX,
+    containerRef: fullscreenWorkspaceRef,
+    isDragging: isDraggingFullscreenX,
+  } = useResizable({
+    initialSplit: 60,
+    min: 30,
+    max: 75,
+    direction: "horizontal",
+    storageKey: "peaklyy-fullscreen-split-x",
+  });
+
+  const {
+    split: fullscreenSplitY,
+    startResize: startFullscreenResizeY,
+    resetSplit: resetFullscreenSplitY,
+    containerRef: fullscreenRightColRef,
+    isDragging: isDraggingFullscreenY,
+  } = useResizable({
+    initialSplit: 48,
+    min: 25,
+    max: 75,
+    direction: "vertical",
+    storageKey: "peaklyy-fullscreen-split-y",
+  });
+
+  // Global Keyboard Shortcuts
   useEffect(() => {
     const shortcut = (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key === "s") {
         event.preventDefault();
-        showToast("Project and code saved to draft.", "success");
+        showToast("Project saved.", "success");
       }
       if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
         event.preventDefault();
@@ -78,21 +115,43 @@ export default function Home() {
         (event.key.toLowerCase() === "k" || (event.shiftKey && event.key.toLowerCase() === "p"))
       ) {
         event.preventDefault();
-        setIsCommandPaletteOpen((prev) => !prev);
+        setCommandPaletteOpen((prev) => !prev);
       }
       if ((event.ctrlKey || event.metaKey) && event.key === ",") {
         event.preventDefault();
-        setIsSettingsOpen((prev) => !prev);
+        setSettingsOpen((prev) => !prev);
+      }
+      if (event.key === "F11") {
+        event.preventDefault();
+        toggleFullscreen();
       }
       if (event.key === "Escape") {
-        setIsCommandPaletteOpen(false);
-        setIsSettingsOpen(false);
-        setProjectDialogOpen(false);
+        if (confirmModal.isOpen) {
+          closeConfirmModal();
+        } else {
+          setCommandPaletteOpen(false);
+          setSettingsOpen(false);
+          setProjectDialogOpen(false);
+          if (isFullscreen) {
+            toggleFullscreen();
+          }
+        }
       }
     };
+
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
-  }, [runCode, setIsCommandPaletteOpen, setIsSettingsOpen, setProjectDialogOpen, showToast]);
+  }, [
+    runCode,
+    setCommandPaletteOpen,
+    setSettingsOpen,
+    setProjectDialogOpen,
+    showToast,
+    confirmModal.isOpen,
+    closeConfirmModal,
+    isFullscreen,
+    toggleFullscreen,
+  ]);
 
   const download = () => {
     if (!project) return;
@@ -112,7 +171,7 @@ export default function Home() {
     if (!file) return;
     try {
       importProject(JSON.parse(await file.text()));
-    } catch {
+    } catch (e) {
       window.alert("That file isn’t a valid Peaklyy Forge project.");
     }
     event.target.value = "";
@@ -160,13 +219,107 @@ export default function Home() {
 
   return (
     <div className="forge-root-layout">
+      {/* Fullscreen Compiler Workstation */}
+      {isFullscreen && (
+        <div className="fullscreen-compiler-overlay" role="dialog" aria-label="Fullscreen Compiler Mode">
+          <header className="fullscreen-top-toolbar">
+            <div className="fullscreen-toolbar-left">
+              <button
+                type="button"
+                className="fullscreen-exit-btn"
+                onClick={toggleFullscreen}
+                title="Exit Fullscreen (Esc or F11)"
+              >
+                <Minimize2 size={15} />
+                <span>Exit Fullscreen</span>
+              </button>
+
+              <div className="fullscreen-divider-line" />
+
+              <span className="fullscreen-project-title">
+                {project?.name || "Peaklyy Workspace"}
+              </span>
+
+              {activeFile && (
+                <span className="fullscreen-active-file-pill">
+                  <LanguageIcon language={getFileLanguage(activeFile.name, project?.language)} size={14} />
+                  <span>{activeFile.name}</span>
+                </span>
+              )}
+            </div>
+
+            <div className="fullscreen-toolbar-right">
+              <LanguageSelector />
+              <RunButton />
+            </div>
+          </header>
+
+          <main
+            className={`fullscreen-workspace-split ${
+              isDraggingFullscreenX || isDraggingFullscreenY ? "is-resizing-active" : ""
+            }`}
+            ref={fullscreenWorkspaceRef}
+          >
+            {/* Left Side: Code Editor (Largest workspace area) */}
+            <section
+              className="fullscreen-pane-editor"
+              style={{ width: `calc(${fullscreenSplitX}% - 5px)` }}
+            >
+              <Editor />
+            </section>
+
+            <ColumnSplitter
+              isDragging={isDraggingFullscreenX}
+              onStart={startFullscreenResizeX}
+              onReset={resetFullscreenSplitX}
+              title="Drag to resize Editor and Console Columns"
+            />
+
+            {/* Right Side: Input Top + Output Bottom */}
+            <aside
+              className="fullscreen-pane-side"
+              ref={fullscreenRightColRef}
+              style={{ width: `calc(${100 - fullscreenSplitX}% - 5px)` }}
+            >
+              {/* Right Top: Input Console */}
+              <div
+                className="fullscreen-input-container"
+                style={{ height: `calc(${fullscreenSplitY}% - 5px)` }}
+              >
+                <Preview isFullscreenMode={true} />
+              </div>
+
+              <RowSplitter
+                isDragging={isDraggingFullscreenY}
+                onStart={startFullscreenResizeY}
+                onReset={resetFullscreenSplitY}
+                title="Drag to resize Input Console and Output Console"
+              />
+
+              {/* Right Bottom: Output Console */}
+              <div
+                className="fullscreen-output-container"
+                style={{ height: `calc(${100 - fullscreenSplitY}% - 5px)` }}
+              >
+                <Output isFullscreenMode={true} />
+              </div>
+            </aside>
+          </main>
+        </div>
+      )}
+
+      {/* Main Standard View Layout */}
       <Navbar />
 
       <div className="forge-body-container">
         <Sidebar />
 
         <main className="forge-main-content">
-          {activeNav === "compiler" ? (
+          {activeNav === "profile" ? (
+            <ProfileView />
+          ) : activeNav === "settings" ? (
+            <SettingsView />
+          ) : (
             <div
               className={`compiler-view-wrapper ${
                 isDraggingCompilerX || isDraggingCompilerY ? "is-resizing-active" : ""
@@ -281,21 +434,23 @@ export default function Home() {
                 <Output />
               </section>
             </div>
-          ) : activeNav === "monitoring" ? (
-            <MonitoringView />
-          ) : activeNav === "profile" ? (
-            <ProfileView />
-          ) : activeNav === "settings" ? (
-            <SettingsView />
-          ) : (
-            <PracticeView />
           )}
         </main>
       </div>
 
+      {/* Global Modals */}
       <ProjectModal />
       <CommandPalette />
       <SettingsModal />
+      <ConfirmModal
+        isOpen={confirmModal.isOpen}
+        title={confirmModal.title}
+        message={confirmModal.message}
+        confirmText={confirmModal.confirmText}
+        cancelText={confirmModal.cancelText}
+        onConfirm={confirmModal.onConfirm}
+        onCancel={closeConfirmModal}
+      />
       <Toast />
     </div>
   );

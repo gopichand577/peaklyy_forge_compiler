@@ -37,8 +37,10 @@ function sweepStaleWorkspaces() {
   } catch {}
 }
 
-// Initial sweep on module load
+// Initial sweep on module load and periodic background sweep (every 15s)
 sweepStaleWorkspaces();
+const staleSweepTimer = setInterval(sweepStaleWorkspaces, 15000);
+if (staleSweepTimer.unref) staleSweepTimer.unref();
 
 /**
  * Safely resolves a sub-path within runDir, preventing path traversal attacks.
@@ -70,8 +72,6 @@ function safeResolveFilePath(runDir, relativeFileName) {
  * @returns {{ runDir: string, filePath: string, runId: string }}
  */
 function createExecutionWorkspace(fileName, code, additionalFiles = []) {
-  sweepStaleWorkspaces();
-
   const runId = crypto.randomUUID();
   const runDir = path.join(BASE_TEMP_DIR, runId);
 

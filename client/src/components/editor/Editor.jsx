@@ -44,6 +44,7 @@ export default function Editor() {
     renameProject,
     selectProjectFile,
     setProjectDialogOpen,
+    openCreateFileDialog,
     isFileExplorerOpen,
     setIsFileExplorerOpen,
     isAddingFile,
@@ -81,8 +82,21 @@ export default function Editor() {
     return merged.filter(Boolean);
   }, [project, projects]);
 
-  const projectFolders = allWorkspaces.filter((p) => !p.isSingleFile);
-  const standaloneSingleFiles = allWorkspaces.filter((p) => Boolean(p.isSingleFile));
+  const projectFolders = useMemo(() => allWorkspaces.filter((p) => !p.isSingleFile), [allWorkspaces]);
+  const standaloneSingleFiles = useMemo(() => allWorkspaces.filter((p) => Boolean(p.isSingleFile)), [allWorkspaces]);
+
+  // Count of total files across all workspaces
+  const totalFilesCount = useMemo(() => {
+    let count = 0;
+    for (const ws of allWorkspaces) {
+      if (ws.files && Array.isArray(ws.files)) {
+        count += ws.files.length;
+      } else {
+        count += 1;
+      }
+    }
+    return count;
+  }, [allWorkspaces]);
 
   const files = project?.files || [];
   const openFileIds = Array.isArray(project?.openFileIds) ? project.openFileIds : files.map((f) => f.id);
@@ -122,14 +136,7 @@ export default function Editor() {
 
     if (targetProjectForNewFile) {
       // Subfile creation inside a specific project folder
-      if (project?.id === targetProjectForNewFile) {
-        addProjectFile(cleanInput, null, false);
-      } else {
-        switchToFile(targetProjectForNewFile);
-        setTimeout(() => {
-          addProjectFile(cleanInput, null, false);
-        }, 50);
-      }
+      addProjectFile(cleanInput, targetProjectForNewFile);
     } else {
       // Standalone individual file creation (from '+' beside EXPLORER)
       createIndividualFile(cleanInput);
@@ -238,17 +245,11 @@ export default function Editor() {
 
   return (
     <section
-      className={`panel editor-card ${isFullscreen ? "fullscreen-editor" : ""}`}
+      className={`panel editor-card ${isFullscreen ? "in-fullscreen-workspace" : ""}`}
       style={{
         height: "100%",
         display: "flex",
         flexDirection: "column",
-        position: isFullscreen ? "fixed" : "relative",
-        top: isFullscreen ? 0 : undefined,
-        left: isFullscreen ? 0 : undefined,
-        right: isFullscreen ? 0 : undefined,
-        bottom: isFullscreen ? 0 : undefined,
-        zIndex: isFullscreen ? 2000 : undefined,
         background: "var(--surface)",
       }}
     >
@@ -290,7 +291,7 @@ export default function Editor() {
             title="Toggle File Explorer"
           >
             <FolderTree size={14} />
-            <span>Files ({files.length})</span>
+            <span>Files ({totalFilesCount})</span>
           </button>
 
           {/* Horizontally Scrollable Tabs Bar with Wheel & Drag support */}
@@ -334,16 +335,8 @@ export default function Editor() {
             <button
               type="button"
               className="editor-new-tab-btn"
-              onClick={() => {
-                if (project && !project.isSingleFile) {
-                  setTargetProjectForNewFile(project.id);
-                } else {
-                  setTargetProjectForNewFile(null);
-                }
-                setIsFileExplorerOpen(true);
-                setIsAddingFile(true);
-              }}
-              title={project && !project.isSingleFile ? `Add subfile to ${project.name}` : "New Individual File (+)"}
+              onClick={() => openCreateFileDialog("file")}
+              title="New File (+)"
             >
               <Plus size={14} />
             </button>
@@ -393,18 +386,15 @@ export default function Editor() {
                 <button
                   type="button"
                   className="explorer-add-btn"
-                  onClick={() => {
-                    setTargetProjectForNewFile(null);
-                    setIsAddingFile((prev) => !prev);
-                  }}
-                  title="New Single File"
+                  onClick={() => openCreateFileDialog("file")}
+                  title="New File"
                 >
                   <FilePlus size={15} />
                 </button>
                 <button
                   type="button"
                   className="explorer-add-btn"
-                  onClick={() => setProjectDialogOpen(true)}
+                  onClick={() => openCreateFileDialog("project")}
                   title="New Project Folder"
                 >
                   <FolderPlus size={15} />
@@ -493,13 +483,14 @@ export default function Editor() {
                           >
                             <input
                               type="text"
-                              placeholder={`e.g. utils.py (subfile in ${proj.name})...`}
+                              placeholder={`e.g. utils.${languageMeta[proj.language]?.extension || "py"} (subfile in ${proj.name})...`}
                               value={newFileNameInput}
                               onChange={(e) => setNewFileNameInput(e.target.value)}
                               onKeyDown={(e) => {
                                 if (e.key === "Escape") {
                                   setIsAddingFile(false);
                                   setTargetProjectForNewFile(null);
+                                  setNewFileNameInput("");
                                 }
                               }}
                               className="explorer-file-input subfile-input"
@@ -580,55 +571,78 @@ export default function Editor() {
 
               {/* All Standalone Individual Files (Root Level, NO Folder Wrapping) */}
               {standaloneSingleFiles.map((sFile) => {
-                const targetFileObj = sFile.files?.[0] || { id: sFile.id, name: sFile.name };
-                const targetFileName = targetFileObj?.name || sFile.name;
                 const isSingleActive = project?.id === sFile.id;
-                const isEditing = editingFileId === targetFileObj.id || editingFileId === sFile.id;
+                const sFiles =
+                  sFile.files && sFile.files.length > 0
+                    ? sFile.files
+                    : [{ id: sFile.id, name: sFile.name, content: "" }];
 
-                return (
-                  <div
-                    key={sFile.id}
-                    className={`explorer-file-item standalone-root-file ${isSingleActive ? "active" : ""}`}
-                    onClick={() => switchToFile(sFile.id, targetFileObj.id)}
-                    title={targetFileName}
-                  >
-                    <FileCode size={14} className="file-item-icon" />
+                return sFiles.map((file) => {
+                  const isFileActive = isSingleActive && file.id === (project?.activeFileId || activeFile?.id);
+                  const isEditing = editingFileId === file.id;
 
-                    {isEditing ? (
-                      <input
-                        type="text"
-                        value={editingFileName}
-                        onChange={(e) => setEditingFileName(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") handleSaveRename(e, targetFileObj.id, sFile.id);
-                          if (e.key === "Escape") setEditingFileId(null);
-                        }}
-                        className="explorer-rename-input"
-                        autoFocus
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                    ) : (
-                      <span className="file-item-name">{targetFileName}</span>
-                    )}
+                  return (
+                    <div
+                      key={file.id}
+                      className={`explorer-file-item standalone-root-file ${isFileActive ? "active" : ""}`}
+                      onClick={() => switchToFile(sFile.id, file.id)}
+                      title={file.name}
+                    >
+                      <FileCode size={14} className="file-item-icon" />
 
-                    <div className="file-item-actions">
-                      {!isEditing && (
-                        <button
-                          type="button"
-                          className="file-action-icon"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setEditingFileId(targetFileObj.id);
-                            setEditingFileName(targetFileName);
+                      {isEditing ? (
+                        <input
+                          type="text"
+                          value={editingFileName}
+                          onChange={(e) => setEditingFileName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") handleSaveRename(e, file.id, sFile.id);
+                            if (e.key === "Escape") setEditingFileId(null);
                           }}
-                          title="Rename Standalone File"
-                        >
-                          <Pencil size={12} />
-                        </button>
+                          className="explorer-rename-input"
+                          autoFocus
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      ) : (
+                        <span className="file-item-name">{file.name}</span>
                       )}
+
+                      {file.isEntry && <span className="entry-tag">main</span>}
+
+                      <div className="file-item-actions">
+                        {!isEditing && (
+                          <>
+                            <button
+                              type="button"
+                              className="file-action-icon"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditingFileId(file.id);
+                                setEditingFileName(file.name);
+                              }}
+                              title="Rename File"
+                            >
+                              <Pencil size={12} />
+                            </button>
+                            {sFiles.length > 1 && (
+                              <button
+                                type="button"
+                                className="file-action-icon delete"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  deleteProjectFile(file.id, sFile.id);
+                                }}
+                                title={`Delete ${file.name}`}
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                );
+                  );
+                });
               })}
             </div>
           </aside>

@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, Code2, Zap } from "lucide-react";
+import { Bell, ChevronDown, Code2 } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import { useEditor } from "../../context/EditorContext";
 import NotificationPanel from "../common/NotificationPanel";
@@ -59,20 +59,11 @@ export default function Navbar() {
       <nav className="nav-center-switcher" aria-label="Main Navigation">
         <button
           type="button"
-          className={`nav-tab-btn ${activeNav === "compiler" ? "active" : ""}`}
+          className="nav-tab-btn active"
           onClick={() => setActiveNav("compiler")}
         >
           <Code2 size={16} />
           <span>Compiler</span>
-        </button>
-
-        <button
-          type="button"
-          className={`nav-tab-btn ${activeNav === "practice" ? "active" : ""}`}
-          onClick={() => setActiveNav("practice")}
-        >
-          <Zap size={15} />
-          <span>Practice</span>
         </button>
       </nav>
 

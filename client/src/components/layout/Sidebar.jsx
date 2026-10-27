@@ -1,10 +1,8 @@
 import {
-  Activity,
   Code2,
   LogOut,
   Settings,
   User,
-  Zap,
 } from "lucide-react";
 import logo from "../../assets/logos/peaklyy-logo.png";
 import { useEditor } from "../../context/EditorContext";
@@ -23,7 +21,7 @@ export default function Sidebar() {
             <span>
               <strong>Peaklyy</strong> <em>Forge</em>
             </span>
-            <small>CODE | PRACTICE | IDE</small>
+            <small>CODE | COMPILER | IDE</small>
           </div>
         </a>
 
@@ -37,24 +35,6 @@ export default function Sidebar() {
           >
             <Code2 size={18} />
             <span>Compiler</span>
-          </button>
-
-          <button
-            type="button"
-            className={`nav-item ${activeNav === "practice" ? "active" : ""}`}
-            onClick={() => setActiveNav("practice")}
-          >
-            <Zap size={18} />
-            <span>Practice</span>
-          </button>
-
-          <button
-            type="button"
-            className={`nav-item ${activeNav === "monitoring" ? "active" : ""}`}
-            onClick={() => setActiveNav("monitoring")}
-          >
-            <Activity size={18} />
-            <span>Monitoring</span>
           </button>
 
           <div className="nav-label account-label">ACCOUNT</div>

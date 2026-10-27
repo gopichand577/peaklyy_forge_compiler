@@ -1,6 +1,5 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import {
-  BarChart3,
   Check,
   CheckCircle2,
   Clock,
@@ -13,7 +12,6 @@ import {
   Sun,
   Moon,
   User,
-  Zap,
 } from "lucide-react";
 import { useEditor } from "../../context/EditorContext";
 import { RUNNABLE_LANGUAGES, languageMeta } from "../../constants/languages";
@@ -24,8 +22,6 @@ export default function ProfileView() {
   const {
     profile,
     updateProfile,
-    activityStats,
-    problemsSolvedCount,
     compilerSettings,
     updateCompilerSettings,
     editorSettings,
@@ -67,10 +63,8 @@ export default function ProfileView() {
   };
 
   const initial = (profile.displayName || "G").charAt(0).toUpperCase();
-  const compilerRuns = activityStats?.compilerRuns || 0;
-  const practiceSessions = activityStats?.practiceSessions || 0;
-  const languagesUsed = activityStats?.languagesUsed || [];
-  const recentActivity = activityStats?.recentActivity || [];
+  const compilerRuns = 0;
+  const recentActivity = [];
 
   return (
     <div className="profile-view-container">
@@ -259,13 +253,13 @@ export default function ProfileView() {
       <div className="profile-activity-section">
         <div className="section-title-group">
           <div className="section-title-left">
-            <BarChart3 size={18} className="text-red" />
-            <h2>Coding Activity</h2>
+            <Code2 size={18} className="text-red" />
+            <h2>Compiler Activity</h2>
           </div>
-          <span className="section-subtitle">Your compiler runs and practice activity on Peaklyy Forge.</span>
+          <span className="section-subtitle">Your compiler runs and coding sessions on Peaklyy Forge.</span>
         </div>
 
-        {/* 4 Real Metric Cards */}
+        {/* Real Metric Cards for Compiler */}
         <div className="metrics-quad-grid">
           <div className="metric-stat-card">
             <div className="metric-icon-wrap">
@@ -282,28 +276,18 @@ export default function ProfileView() {
               <CheckCircle2 size={20} />
             </div>
             <div className="metric-data">
-              <span className="metric-value">{problemsSolvedCount}</span>
-              <span className="metric-label">Problems Solved</span>
+              <span className="metric-value">{RUNNABLE_LANGUAGES.length}</span>
+              <span className="metric-label">Active Runtimes</span>
             </div>
           </div>
 
           <div className="metric-stat-card">
             <div className="metric-icon-wrap">
-              <Zap size={20} />
+              <Clock size={20} />
             </div>
             <div className="metric-data">
-              <span className="metric-value">{practiceSessions}</span>
-              <span className="metric-label">Practice Sessions</span>
-            </div>
-          </div>
-
-          <div className="metric-stat-card">
-            <div className="metric-icon-wrap">
-              <BarChart3 size={20} />
-            </div>
-            <div className="metric-data">
-              <span className="metric-value">{languagesUsed.length}</span>
-              <span className="metric-label">Languages Used</span>
+              <span className="metric-value">{RUNNABLE_LANGUAGES.length}</span>
+              <span className="metric-label">Languages Ready</span>
             </div>
           </div>
         </div>
@@ -314,14 +298,14 @@ export default function ProfileView() {
           <div className="forge-card activity-log-card">
             <div className="card-header-bar">
               <Clock size={16} className="text-red" />
-              <h3>Recent Activity</h3>
+              <h3>Recent Executions</h3>
             </div>
 
             {recentActivity.length === 0 ? (
               <div className="activity-empty-state">
                 <FileText size={32} className="empty-icon-muted" />
-                <h4>No recent activity</h4>
-                <p>Your compiler and practice activity will appear here once you start coding.</p>
+                <h4>No recent executions</h4>
+                <p>Your compiler execution history will appear here once you run code.</p>
                 <button
                   type="button"
                   className="forge-button primary-btn-sm"
@@ -336,7 +320,7 @@ export default function ProfileView() {
                 {recentActivity.map((item) => (
                   <div key={item.id} className="activity-feed-item">
                     <div className="feed-item-icon">
-                      {item.type === "compiler" ? <Code2 size={14} /> : <Zap size={14} />}
+                      <Code2 size={14} />
                     </div>
                     <div className="feed-item-body">
                       <span className="feed-item-title">{item.title}</span>
@@ -353,30 +337,22 @@ export default function ProfileView() {
           {/* Languages Used Card */}
           <div className="forge-card languages-used-card">
             <div className="card-header-bar">
-              <BarChart3 size={16} className="text-red" />
-              <h3>Languages Used</h3>
+              <Code2 size={16} className="text-red" />
+              <h3>Supported Languages</h3>
             </div>
 
-            {languagesUsed.length === 0 ? (
+            {RUNNABLE_LANGUAGES.length === 0 ? (
               <div className="activity-empty-state">
-                <BarChart3 size={32} className="empty-icon-muted" />
-                <h4>No languages used yet</h4>
-                <p>The languages you use in the compiler and practice will be shown here.</p>
-                <button
-                  type="button"
-                  className="forge-button primary-btn-sm"
-                  onClick={() => setActiveNav("practice")}
-                >
-                  <Zap size={14} />
-                  <span>Start Practicing</span>
-                </button>
+                <Code2 size={32} className="empty-icon-muted" />
+                <h4>No languages configured</h4>
+                <p>Configured compiler languages will be shown here.</p>
               </div>
             ) : (
               <div className="languages-badge-grid">
-                {languagesUsed.map((langKey) => (
+                {RUNNABLE_LANGUAGES.map((langKey) => (
                   <div key={langKey} className="language-used-badge">
                     <span className="lang-dot-indicator" />
-                    <span>{languageMeta[langKey]?.name || langKey}</span>
+                    <span>{languageMeta[langKey]?.label || languageMeta[langKey]?.name || langKey}</span>
                   </div>
                 ))}
               </div>

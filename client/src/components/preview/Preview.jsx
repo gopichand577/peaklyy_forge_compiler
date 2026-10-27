@@ -50,12 +50,12 @@ function buildPreviewDocument(html = "", css = "", javascript = "") {
     } catch (e) {
       console.warn("Preview execution caught:", e.message);
     }
-  <\/script>`;
+  </script>`;
   return insertBeforeClose(withStyles, "body", safeScript);
 }
 
 
-export default function Preview() {
+export default function Preview({ isFullscreenMode = false }) {
   const {
     project,
     activeFile,
@@ -70,6 +70,7 @@ export default function Preview() {
     terminalHistory,
     clearTerminal,
     stopExecution,
+    openConfirmModal,
   } = useEditor();
 
   const files = project?.files || [];
@@ -191,16 +192,36 @@ export default function Preview() {
 
   const [copiedStdin, setCopiedStdin] = useState(false);
 
-  const handleCopyStdin = () => {
-    const textToCopy = terminalHistory.length > 0 ? terminalHistory.join("\n") : (stdin || "");
-    if (!textToCopy) return;
-    navigator.clipboard.writeText(textToCopy);
-    setCopiedStdin(true);
-    setTimeout(() => setCopiedStdin(false), 2000);
+  const handleCopyStdin = async () => {
+    try {
+      await navigator.clipboard.writeText(stdin || "");
+      setCopiedStdin(true);
+      setTimeout(() => setCopiedStdin(false), 2000);
+    } catch {
+      // ignore clipboard error
+    }
+  };
+
+  const handleClearInputClick = () => {
+    openConfirmModal({
+      title: "Clear Standard Input?",
+      message:
+        terminalHistory.length > 0
+          ? "This will clear the interactive terminal prompt history. Your editor code and output will not be changed."
+          : "This will clear all standard input (stdin) text. Your editor code and output will not be changed.",
+      confirmText: "Clear Input",
+      onConfirm: () => {
+        if (terminalHistory.length > 0) {
+          clearTerminal();
+        } else {
+          clearStdin();
+        }
+      },
+    });
   };
 
   return (
-    <section className="panel preview-card">
+    <section className={`panel preview-card ${isFullscreenMode ? "fullscreen-preview-card" : ""}`}>
       <div className="panel-header preview-header">
         <div className="preview-header-left">
           {isWebLanguage ? (
@@ -300,8 +321,8 @@ export default function Preview() {
 
                   <button
                     type="button"
-                    className="stdin-action-btn"
-                    onClick={terminalHistory.length > 0 ? clearTerminal : clearStdin}
+                    className="stdin-action-btn stdin-clear-action-btn"
+                    onClick={handleClearInputClick}
                     title={terminalHistory.length > 0 ? "Clear terminal history" : "Clear all input lines"}
                   >
                     <Trash2 size={12} />
@@ -333,7 +354,7 @@ export default function Preview() {
               sandbox="allow-scripts"
             />
           </div>
-        ) : isRunning || terminalHistory.length > 0 ? (
+        ) : isWaitingForInput || terminalHistory.length > 0 ? (
           <div
             className="interactive-stdin-container"
             onClick={() => inlineInputRef.current?.focus()}

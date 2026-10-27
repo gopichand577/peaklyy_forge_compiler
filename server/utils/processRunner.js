@@ -85,11 +85,17 @@ function runProcess(command, args = [], options = {}) {
 
     let child;
     try {
-      child = spawn(command, args, {
+      const isWindows = process.platform === "win32";
+      const isBatchFile = isWindows && /\.(bat|cmd)$/i.test(command);
+      const spawnCommand = isBatchFile ? (process.env.COMSPEC || "cmd.exe") : command;
+      const spawnArgs = isBatchFile ? ["/c", `"${command}"`, ...args] : args;
+
+      child = spawn(spawnCommand, spawnArgs, {
         cwd: options.cwd || process.cwd(),
         env: safeEnv,
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
+        windowsVerbatimArguments: isBatchFile,
       });
     } catch (spawnError) {
       const endTime = process.hrtime.bigint();
@@ -136,15 +142,16 @@ function runProcess(command, args = [], options = {}) {
     // Stdin handling
     if (child.stdin) {
       child.stdin.on("error", () => {
-        // Handle EPIPE if process exited early
+        // Handle EPIPE / broken pipe safely if process exited early
       });
 
       try {
-        if (input.length > 0) {
+        if (input !== undefined && input !== null && input.length > 0) {
           const normalizedInput = input.endsWith("\n") ? input : `${input}\n`;
-          child.stdin.write(normalizedInput);
+          child.stdin.end(normalizedInput, "utf8");
+        } else {
+          child.stdin.end();
         }
-        child.stdin.end();
       } catch {
         // Child closed stdin
       }

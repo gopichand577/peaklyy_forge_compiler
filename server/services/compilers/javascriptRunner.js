@@ -119,7 +119,7 @@ async function executeJavaScript(code, input = "") {
       status: "SUCCESS",
       compilationStatus: "SUCCESS",
       executionStatus: "SUCCESS",
-      output: sanitizedStdout || (sanitizedStderr ? sanitizedStderr : "Program executed successfully with no output."),
+      output: sanitizedStdout,
       error: null,
       executionTime: result.executionTime,
       memoryUsage: null,

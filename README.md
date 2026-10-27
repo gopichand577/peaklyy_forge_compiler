@@ -1,6 +1,6 @@
-# Peaklyy Forge
+# Peaklyy Forge Compiler
 
-**Peaklyy Forge** is a high-performance, developer-focused cloud IDE and online judge platform built for interactive multi-language code execution, algorithmic practice, and real-time execution observability.
+**Peaklyy Forge Compiler** is a high-performance, developer-focused cloud IDE and multi-language code execution engine built for interactive compilation, standard input streaming, and real-time observability.
 
 ---
 

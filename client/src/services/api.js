@@ -5,66 +5,33 @@ const client = axios.create({
   timeout: 30000,
 });
 
-// P0 Compiler Execution
-export const executeCode = async (language, code, input = "") => {
-  const response = await client.post("/compiler/run", { language, code, input, stdin: input });
+/**
+ * P0 Compiler Execution
+ * Sends source code and stdin to backend for compilation and execution.
+ */
+export const executeCode = async (language, code, input = "", options = {}) => {
+  const response = await client.post(
+    "/compiler/run",
+    {
+      language,
+      code,
+      input,
+      stdin: input,
+    },
+    options
+  );
   return response.data;
 };
 
-// P1 Online Judge APIs
-export const fetchProblems = async (params = {}) => {
-  const response = await client.get("/judge/problems", { params });
-  return response.data;
-};
-
-export const fetchProblem = async (id) => {
-  const response = await client.get(`/judge/problems/${id}`);
-  return response.data;
-};
-
-export const runJudgeCode = async (problemId, { language, code, customInput }) => {
-  const response = await client.post(`/judge/problems/${problemId}/run`, {
-    language,
-    code,
-    customInput,
-  });
-  return response.data;
-};
-
-export const submitJudgeSolution = async (problemId, { language, code }) => {
-  const response = await client.post(`/judge/problems/${problemId}/submit`, {
-    language,
-    code,
-  });
-  return response.data;
-};
-
-export const fetchProblemSubmissions = async (problemId) => {
-  const response = await client.get(`/judge/problems/${problemId}/submissions`);
-  return response.data;
-};
-
-export const fetchSubmissionDetail = async (submissionId) => {
-  const response = await client.get(`/judge/submissions/${submissionId}`);
-  return response.data;
-};
-
-export const fetchProblemDraft = async (problemId, language) => {
-  const response = await client.get(`/judge/problems/${problemId}/draft`, {
-    params: { language },
-  });
-  return response.data;
-};
-
-export const saveProblemDraft = async (problemId, { language, code }) => {
-  const response = await client.post(`/judge/problems/${problemId}/draft`, {
-    language,
-    code,
-  });
-  return response.data;
-};
-
-export const fetchMonitoringMetrics = async () => {
-  const response = await client.get("/monitoring/metrics");
-  return response.data;
+/**
+ * Fetches configured languages and real runtime availability from the backend.
+ */
+export const fetchAvailableLanguages = async () => {
+  try {
+    const response = await client.get("/compiler/languages");
+    return response.data?.languages || null;
+  } catch (err) {
+    console.warn("Failed to fetch language runtime availability:", err.message);
+    return null;
+  }
 };

@@ -1,4 +1,16 @@
-import React from "react";
+import {
+  SiC,
+  SiCplusplus,
+  SiDart,
+  SiGo,
+  SiKotlin,
+  SiPhp,
+  SiRuby,
+  SiRust,
+  SiSwift,
+  SiTypescript,
+} from "react-icons/si";
+import { TbBrandCSharp } from "react-icons/tb";
 
 /**
  * Official Python Logo SVG
@@ -153,11 +165,72 @@ export function CssIcon({ size = 18, className = "" }) {
   );
 }
 
+export function TypeScriptIcon({ size = 18, className = "" }) {
+  return <SiTypescript size={size} className={className} style={{ color: "#3178c6" }} />;
+}
+
+export function CIcon({ size = 18, className = "" }) {
+  return <SiC size={size} className={className} style={{ color: "#a8b9cc" }} />;
+}
+
+export function CppIcon({ size = 18, className = "" }) {
+  return <SiCplusplus size={size} className={className} style={{ color: "#00599c" }} />;
+}
+
+export function CsharpIcon({ size = 18, className = "" }) {
+  return <TbBrandCSharp size={size} className={className} style={{ color: "#239120" }} />;
+}
+
+export function GoIcon({ size = 18, className = "" }) {
+  return <SiGo size={size} className={className} style={{ color: "#00add8" }} />;
+}
+
+export function RustIcon({ size = 18, className = "" }) {
+  return <SiRust size={size} className={className} style={{ color: "#dea584" }} />;
+}
+
+export function PhpIcon({ size = 18, className = "" }) {
+  return <SiPhp size={size} className={className} style={{ color: "#777bb4" }} />;
+}
+
+export function KotlinIcon({ size = 18, className = "" }) {
+  return <SiKotlin size={size} className={className} style={{ color: "#7f52ff" }} />;
+}
+
+export function SwiftIcon({ size = 18, className = "" }) {
+  return <SiSwift size={size} className={className} style={{ color: "#f05138" }} />;
+}
+
+export function RubyIcon({ size = 18, className = "" }) {
+  return <SiRuby size={size} className={className} style={{ color: "#cc342d" }} />;
+}
+
+export function DartIcon({ size = 18, className = "" }) {
+  return <SiDart size={size} className={className} style={{ color: "#0175c2" }} />;
+}
+
 export const languageIconMap = {
   python: PythonIcon,
+  py: PythonIcon,
   java: JavaIcon,
   javascript: JavaScriptIcon,
   js: JavaScriptIcon,
+  typescript: TypeScriptIcon,
+  ts: TypeScriptIcon,
+  c: CIcon,
+  cpp: CppIcon,
+  csharp: CsharpIcon,
+  cs: CsharpIcon,
+  go: GoIcon,
+  rust: RustIcon,
+  rs: RustIcon,
+  php: PhpIcon,
+  kotlin: KotlinIcon,
+  kt: KotlinIcon,
+  swift: SwiftIcon,
+  ruby: RubyIcon,
+  rb: RubyIcon,
+  dart: DartIcon,
   html: HtmlIcon,
   css: CssIcon,
 };

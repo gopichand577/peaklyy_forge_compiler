@@ -1,11 +1,10 @@
+require("dotenv").config();
 const http = require("http");
 const express = require("express");
 const cors = require("cors");
 const { WebSocketServer } = require("ws");
 
 const compilerRoutes = require("./routes/compilerRoutes");
-const judgeRoutes = require("./routes/judgeRoutes");
-const monitoringRoutes = require("./routes/monitoringRoutes");
 const { executionRateLimiter } = require("./utils/rateLimiter");
 const { startInteractiveSession } = require("./services/interactiveExecution");
 const { installJdk } = require("./scripts/install-jdk");
@@ -15,16 +14,14 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "5mb" }));
 
-// Rate limit execution routes
+// Rate limit compiler execution routes
 app.use("/api/compiler/run", executionRateLimiter);
-app.use("/api/judge/run", executionRateLimiter);
-app.use("/api/judge/submit", executionRateLimiter);
 
 // Health check endpoint
 app.get(["/", "/api", "/api/health"], (req, res) => {
   res.json({
-    status: "ok",
-    service: "Peaklyy Forge Backend & Online Judge",
+    status: "OK",
+    service: "Peaklyy Forge Compiler Backend",
     uptime: `${Math.round(process.uptime())}s`,
     timestamp: new Date().toISOString(),
   });
@@ -32,14 +29,6 @@ app.get(["/", "/api", "/api/health"], (req, res) => {
 
 // Mount P0 Compiler routes
 app.use("/api/compiler", compilerRoutes);
-
-// Mount P1 Judge routes
-app.use("/api/judge", judgeRoutes);
-app.use("/api", judgeRoutes);
-
-// Mount P2 Real Monitoring & Observability routes
-app.use("/api/monitoring", monitoringRoutes);
-app.use("/api/compiler/monitoring", monitoringRoutes);
 
 const PORT = process.env.PORT || 5000;
 const server = http.createServer(app);
@@ -60,7 +49,7 @@ wss.on("connection", (ws) => {
           activeSession = null;
         }
 
-        const { language, code, files, input } = msg;
+        const { language, code, files, input, interactive, closeStdin } = msg;
 
         ws.send(JSON.stringify({ type: "status", status: "RUNNING" }));
 
@@ -69,6 +58,8 @@ wss.on("connection", (ws) => {
           code,
           files: files || [],
           initialInput: input || "",
+          interactive: Boolean(interactive),
+          closeStdin: Boolean(closeStdin),
           onPrompt: (promptText) => {
             if (ws.readyState === ws.OPEN) {
               ws.send(JSON.stringify({ type: "prompt", data: promptText }));
@@ -94,6 +85,10 @@ wss.on("connection", (ws) => {
       } else if (msg.type === "stdin") {
         if (activeSession) {
           activeSession.writeStdin(msg.data || "");
+        }
+      } else if (msg.type === "eof") {
+        if (activeSession && typeof activeSession.endStdin === "function") {
+          activeSession.endStdin();
         }
       } else if (msg.type === "kill") {
         if (activeSession) {

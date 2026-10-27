@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from "react";
 import {
-  BarChart3,
   Code2,
   FolderOpen,
   Maximize2,
@@ -11,10 +10,9 @@ import {
   Settings,
   Sparkles,
   Trash2,
-  X,
-  Zap,
 } from "lucide-react";
 import { useEditor } from "../../context/EditorContext";
+import { TARGET_LANGUAGES } from "../../constants/languages";
 import LanguageIcon from "./LanguageIcon";
 
 export default function CommandPalette() {
@@ -131,26 +129,6 @@ export default function CommandPalette() {
       },
     },
     {
-      id: "nav-practice",
-      title: "Switch to Practice Mode",
-      subtitle: "P1 Algorithmic problem catalog and automated judge",
-      icon: <Zap size={16} />,
-      action: () => {
-        setActiveNav("practice");
-        setCommandPaletteOpen(false);
-      },
-    },
-    {
-      id: "nav-monitoring",
-      title: "Open Real System Monitoring Dashboard",
-      subtitle: "View real execution metrics, error rates, and observability logs",
-      icon: <BarChart3 size={16} className="text-red" />,
-      action: () => {
-        setActiveNav("monitoring");
-        setCommandPaletteOpen(false);
-      },
-    },
-    {
       id: "reset-code",
       title: "Reset Starter Template",
       subtitle: "Restore active file to clean starter template",
@@ -173,7 +151,7 @@ export default function CommandPalette() {
       },
     },
     // Language Switchers
-    ...["python", "javascript", "java", "html", "css"].map((lang) => ({
+    ...TARGET_LANGUAGES.map((lang) => ({
       id: `lang-${lang}`,
       title: `Switch Language: ${lang.toUpperCase()}`,
       subtitle: `Set active execution language to ${lang}`,

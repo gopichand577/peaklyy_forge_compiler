@@ -1,16 +1,40 @@
 /**
- * Peaklyy Forge - Compiler Controller (P0)
+ * Peaklyy Forge - Compiler Controller (P0 Only)
  */
 
 const { executeCode } = require("../services/compilerService");
-const { DEFAULT_LIMITS, LANGUAGE_CONFIG } = require("../config/languages");
-const { recordExecutionMetric } = require("../services/metricsService");
+const { executionQueue } = require("../services/executionQueue");
+const { DEFAULT_LIMITS, LANGUAGE_CONFIG, getLanguageAvailability } = require("../config/languages");
 
+/**
+ * Returns supported languages and real environment runtime availability.
+ */
+const getLanguages = (req, res) => {
+  return res.status(200).json({
+    success: true,
+    languages: getLanguageAvailability(),
+  });
+};
+
+/**
+ * Returns real-time queue capacity, active workers, and execution telemetry.
+ */
+const getStats = (req, res) => {
+  return res.status(200).json({
+    success: true,
+    queue: executionQueue.getStats(),
+    percentiles: executionQueue.getPercentiles(),
+    timestamp: new Date().toISOString(),
+  });
+};
+
+/**
+ * Executes source code in sandbox environment.
+ */
 const runCode = async (req, res) => {
   try {
     const { language, code, input, stdin } = req.body || {};
     const rawInput = stdin !== undefined ? stdin : input;
-    console.log(`[EXECUTE] lang=${language}, codeLen=${code ? code.length : 0}, stdin=${JSON.stringify(rawInput || "")}`);
 
     // 1. Validation: Language
     if (!language || typeof language !== "string") {
@@ -95,16 +119,19 @@ const runCode = async (req, res) => {
       }
     }
 
-    // 4. Execution
-    const result = await executeCode(normalizedLang, code, sanitizedInput);
+    // 4. Execution (routed through bounded executionQueue with fair scheduling)
+    const clientKey = req.headers["x-client-id"] || req.ip || req.socket.remoteAddress || "127.0.0.1";
 
-    recordExecutionMetric({
-      language: normalizedLang,
-      mode: "http",
-      status: result.status,
-      executionTime: result.executionTime,
-      exitCode: result.exitCode,
-    });
+    let result;
+    if (LANGUAGE_CONFIG[normalizedLang] && LANGUAGE_CONFIG[normalizedLang].executionMode === "preview") {
+      // Preview languages (HTML/CSS) render in frontend and do not require compiler subprocesses
+      result = await executeCode(normalizedLang, code, sanitizedInput);
+    } else {
+      result = await executionQueue.enqueue(
+        () => executeCode(normalizedLang, code, sanitizedInput),
+        { clientKey }
+      );
+    }
 
     return res.status(200).json({
       success: result.status === "SUCCESS",
@@ -114,10 +141,45 @@ const runCode = async (req, res) => {
       output: result.output,
       error: result.error,
       executionTime: result.executionTime,
+      queueWaitTime: result.queueWaitTime || 0,
       memoryUsage: result.memoryUsage,
       exitCode: result.exitCode,
     });
   } catch (err) {
+    if (err && (err.code === "CLIENT_ABORTED" || req.destroyed || res.writableEnded)) {
+      return;
+    }
+    if (err && err.code === "QUEUE_FULL") {
+      res.setHeader("Retry-After", String(err.retryAfter || 2));
+      return res.status(503).json({
+        success: false,
+        status: "QUEUE_FULL",
+        compilationStatus: null,
+        executionStatus: null,
+        output: "",
+        error: err.message,
+        executionTime: 0,
+        queueWaitTime: 0,
+        memoryUsage: null,
+        exitCode: null,
+      });
+    }
+
+    if (err && err.code === "QUEUE_TIMEOUT") {
+      return res.status(504).json({
+        success: false,
+        status: "QUEUE_TIMEOUT",
+        compilationStatus: null,
+        executionStatus: null,
+        output: "",
+        error: err.message,
+        executionTime: 0,
+        queueWaitTime: executionQueue.queueTimeoutMs,
+        memoryUsage: null,
+        exitCode: null,
+      });
+    }
+
     console.error("Internal Forge Server Error:", err);
     return res.status(500).json({
       success: false,
@@ -135,4 +197,6 @@ const runCode = async (req, res) => {
 
 module.exports = {
   runCode,
+  getLanguages,
+  getStats,
 };

@@ -348,7 +348,7 @@ export default function SettingsView() {
         )}
 
         {/* 4. Notifications Card */}
-        {matchesSearch("notifications execution practice system notifications") && (
+        {matchesSearch("notifications execution system notifications") && (
           <div className="forge-card settings-card">
             <div className="card-header-bar">
               <Bell size={16} className="text-red" />
@@ -364,21 +364,6 @@ export default function SettingsView() {
                 className={`toggle-switch ${notificationSettings.execution !== false ? "on" : "off"}`}
                 onClick={() =>
                   updateNotificationSettings({ execution: notificationSettings.execution === false ? true : false })
-                }
-              >
-                <span className="toggle-thumb" />
-              </button>
-            </div>
-
-            <div className="card-setting-row">
-              <div className="setting-label-group">
-                <span className="setting-label">Practice Notifications</span>
-              </div>
-              <button
-                type="button"
-                className={`toggle-switch ${notificationSettings.practice !== false ? "on" : "off"}`}
-                onClick={() =>
-                  updateNotificationSettings({ practice: notificationSettings.practice === false ? true : false })
                 }
               >
                 <span className="toggle-thumb" />

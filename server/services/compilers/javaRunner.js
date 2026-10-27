@@ -137,7 +137,7 @@ async function executeJava(code, input = "") {
     // 2. Execution Phase
     const execResult = await runProcess(
       detection.java,
-      ["-Xmx128m", "-cp", ".", className],
+      ["-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8", "-Xmx128m", "-cp", ".", className],
       {
         cwd: workspace.runDir,
         env: javaEnv,
@@ -210,7 +210,7 @@ async function executeJava(code, input = "") {
       status: "SUCCESS",
       compilationStatus: "SUCCESS",
       executionStatus: "SUCCESS",
-      output: sanitizedStdout || (sanitizedStderr ? sanitizedStderr : "Program executed successfully with no output."),
+      output: sanitizedStdout,
       error: null,
       executionTime: totalTime,
       memoryUsage: null,

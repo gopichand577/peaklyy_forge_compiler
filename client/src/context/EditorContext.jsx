@@ -1,41 +1,27 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import {
-  executeCode,
-  fetchProblems,
-  fetchProblem,
-  runJudgeCode,
-  submitJudgeSolution,
-  fetchProblemSubmissions,
-  fetchSubmissionDetail,
-  fetchProblemDraft,
-  saveProblemDraft,
-} from "../services/api";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { executeCode, fetchAvailableLanguages } from "../services/api";
 import { connectInteractiveSession } from "../services/terminalSocket";
-
-const EditorContext = createContext(null);
-const STORAGE_KEY = "peaklyy-forge-projects";
-const ACTIVE_KEY = "peaklyy-forge-active-project";
-const LOCAL_DRAFTS_KEY = "peaklyy-forge-p1-drafts";
-const NAV_KEY = "peaklyy-forge-active-nav";
-const PRACTICE_VIEW_MODE_KEY = "peaklyy-forge-practice-view-mode";
-const PRACTICE_PROBLEM_ID_KEY = "peaklyy-forge-selected-problem-id";
-const PRACTICE_LANG_KEY = "peaklyy-forge-practice-lang";
-
 import {
   getFileLanguage,
   initialOutput,
   languageMeta,
   RUNNABLE_LANGUAGES,
   starterCode,
+  TARGET_LANGUAGES,
 } from "../constants/languages";
 
-export { getFileLanguage, languageMeta, RUNNABLE_LANGUAGES };
+const EditorContext = createContext(null);
+const STORAGE_KEY = "peaklyy-forge-projects";
+const ACTIVE_KEY = "peaklyy-forge-active-project";
+const NAV_KEY = "peaklyy-forge-active-nav";
+
+export { getFileLanguage, languageMeta, RUNNABLE_LANGUAGES, TARGET_LANGUAGES };
 
 const makeProject = (name = "Untitled project", language = "python") => {
-  const ext = languageMeta[language]?.extension || "py";
-  const entryName = language === "java" ? "Main.java" : `main.${ext}`;
-  const code = starterCode[language] || "";
+  const meta = languageMeta[language] || languageMeta.python;
+  const entryName = meta.defaultFileName || `main.${meta.extension || "py"}`;
+  const code = starterCode[language] || starterCode.python || "";
   const entryId = `file-${crypto.randomUUID().substring(0, 8)}`;
   return {
     id: crypto.randomUUID(),
@@ -55,8 +41,8 @@ const makeProject = (name = "Untitled project", language = "python") => {
 function ensureProjectFiles(proj) {
   if (!proj) return proj;
   const lang = proj.language || "python";
-  const ext = languageMeta[lang]?.extension || "py";
-  const entryName = lang === "java" ? "Main.java" : `main.${ext}`;
+  const meta = languageMeta[lang] || languageMeta.python;
+  const entryName = meta.defaultFileName || `main.${meta.extension || "py"}`;
   const code = proj[lang] || starterCode[lang] || "";
 
   if (!proj.files || !Array.isArray(proj.files) || proj.files.length === 0) {
@@ -81,68 +67,37 @@ const readProjects = () => {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
     if (!Array.isArray(raw)) return [];
     const seen = new Set();
-    return raw.filter((p) => {
-      if (!p || !p.id || seen.has(p.id)) return false;
-      seen.add(p.id);
-      return true;
-    });
-  } catch {
+    return raw
+      .filter((p) => {
+        if (!p || !p.id || seen.has(p.id)) return false;
+        seen.add(p.id);
+        return true;
+      })
+      .map((p) => ensureProjectFiles(p));
+  } catch (_e) {
     return [];
   }
 };
 
-const getLocalDraft = (problemId, language) => {
-  try {
-    const map = JSON.parse(localStorage.getItem(LOCAL_DRAFTS_KEY) || "{}");
-    return map[`${problemId}:${language}`] || null;
-  } catch {
-    return null;
-  }
-};
-
-const setLocalDraft = (problemId, language, code) => {
-  try {
-    const map = JSON.parse(localStorage.getItem(LOCAL_DRAFTS_KEY) || "{}");
-    map[`${problemId}:${language}`] = { code, lastEditedAt: new Date().toISOString() };
-    localStorage.setItem(LOCAL_DRAFTS_KEY, JSON.stringify(map));
-  } catch { }
-};
-
-const cleanLegacyCode = (code, starter) => {
-  if (!code) return starter || "";
-  if (code.includes("__main__") && code.includes("import sys")) {
-    const classMatch = code.match(/(class\s+Solution[\s\S]*?)(?=\nif\s+__name__|$)/);
-    if (classMatch && classMatch[1]) return classMatch[1].trim();
-    return starter || code;
-  }
-  if (code.includes("readFileSync") && code.includes("fs")) {
-    const fnMatch = code.match(/(function\s+[A-Za-z0-9_]+\([\s\S]*?\n\})/);
-    if (fnMatch && fnMatch[1]) return fnMatch[1].trim();
-    return starter || code;
-  }
-  if (code.includes("public class Main") && code.includes("static void main")) {
-    const classMatch = code.match(/(class\s+Solution\s*\{[\s\S]*?\n\})/);
-    if (classMatch && classMatch[1]) return classMatch[1].trim();
-    return starter || code;
-  }
-  return code;
-};
-
 export function EditorProvider({ children }) {
-  // Navigation mode: 'compiler' | 'practice' (Persisted across refreshes)
+  // Navigation mode for P0 (only 'compiler' is active, with profile/settings)
   const [activeNav, setActiveNavState] = useState(() => {
     try {
-      return localStorage.getItem(NAV_KEY) || "compiler";
-    } catch {
+      const saved = localStorage.getItem(NAV_KEY);
+      return saved === "profile" || saved === "settings" ? saved : "compiler";
+    } catch (e) {
       return "compiler";
     }
   });
 
   const setActiveNav = useCallback((nav) => {
-    setActiveNavState(nav);
+    const safeNav = nav === "profile" || nav === "settings" ? nav : "compiler";
+    setActiveNavState(safeNav);
     try {
-      localStorage.setItem(NAV_KEY, nav);
-    } catch {}
+      localStorage.setItem(NAV_KEY, safeNav);
+    } catch (e) {
+      // ignore
+    }
   }, []);
 
   // =========================================================================
@@ -152,13 +107,15 @@ export function EditorProvider({ children }) {
   const [project, setProject] = useState(() => {
     const saved = readProjects();
     const active = localStorage.getItem(ACTIVE_KEY);
-    return saved.find((item) => item.id === active) || saved[0] || null;
+    const found = saved.find((item) => item.id === active) || saved[0];
+    return found ? ensureProjectFiles(found) : ensureProjectFiles(makeProject("My Project", "python"));
   });
+
   const [stdin, setStdinState] = useState(() => {
     try {
       const saved = localStorage.getItem("peaklyy-forge-stdin");
       return saved !== null ? saved : "Alice\n10\n20\n";
-    } catch {
+    } catch (e) {
       return "Alice\n10\n20\n";
     }
   });
@@ -167,19 +124,16 @@ export function EditorProvider({ children }) {
     setStdinState(val);
     try {
       localStorage.setItem("peaklyy-forge-stdin", val);
-    } catch {}
+    } catch (e) {
+      // ignore
+    }
   }, []);
+
   const [output, setOutput] = useState(initialOutput);
   const [isRunning, setIsRunning] = useState(false);
   const [isProjectDialogOpen, setProjectDialogOpen] = useState(false);
   const [projectDialogMode, setProjectDialogMode] = useState("project"); // 'project' | 'file'
   const [projectDialogLang, setProjectDialogLang] = useState(null);
-
-  const openCreateFileDialog = useCallback((langKey = null) => {
-    setProjectDialogMode("file");
-    setProjectDialogLang(langKey || null);
-    setProjectDialogOpen(true);
-  }, []);
 
   // Terminal interactive state
   const [terminalHistory, setTerminalHistory] = useState([]);
@@ -187,10 +141,52 @@ export function EditorProvider({ children }) {
   const [isWaitingForInput, setIsWaitingForInput] = useState(false);
   const activeSessionRef = useRef(null);
   const pendingPasteQueueRef = useRef([]);
+  const abortControllerRef = useRef(null);
 
-  // =========================================================================
-  // P2 DX & MULTI-FILE STATE
-  // =========================================================================
+  // Fullscreen state
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const toggleFullscreen = useCallback(() => setIsFullscreen((prev) => !prev), []);
+
+  // Real backend runtime availability map
+  const [availableRuntimes, setAvailableRuntimes] = useState(null);
+
+  useEffect(() => {
+    fetchAvailableLanguages().then((runtimes) => {
+      if (runtimes) {
+        setAvailableRuntimes(runtimes);
+      }
+    });
+  }, []);
+
+  // Clear confirmation dialog state
+  const [confirmModal, setConfirmModal] = useState({
+    isOpen: false,
+    title: "",
+    message: "",
+    confirmText: "Clear",
+    cancelText: "Cancel",
+    onConfirm: () => {},
+  });
+
+  const openConfirmModal = useCallback(({ title, message, confirmText = "Clear", onConfirm }) => {
+    setConfirmModal({
+      isOpen: true,
+      title,
+      message,
+      confirmText,
+      cancelText: "Cancel",
+      onConfirm: () => {
+        onConfirm();
+        setConfirmModal((prev) => ({ ...prev, isOpen: false }));
+      },
+    });
+  }, []);
+
+  const closeConfirmModal = useCallback(() => {
+    setConfirmModal((prev) => ({ ...prev, isOpen: false }));
+  }, []);
+
+  // Editor settings & preferences
   const [editorSettings, setEditorSettingsState] = useState(() => {
     try {
       return (
@@ -203,7 +199,7 @@ export function EditorProvider({ children }) {
           autoSave: true,
         }
       );
-    } catch {
+    } catch (e) {
       return { fontSize: 14, tabSize: 2, wordWrap: "on", minimap: false, lineNumbers: "on", autoSave: true };
     }
   });
@@ -213,17 +209,19 @@ export function EditorProvider({ children }) {
       const updated = { ...prev, ...newSettings };
       try {
         localStorage.setItem("peaklyy-forge-editor-settings", JSON.stringify(updated));
-      } catch {}
+      } catch (e) {
+        // ignore
+      }
       return updated;
     });
   }, []);
 
-  // Theme State (Dark / Light)
+  // Theme State
   const THEME_STORAGE_KEY = "peaklyy-forge-theme";
   const [theme, setThemeState] = useState(() => {
     try {
       return localStorage.getItem(THEME_STORAGE_KEY) || "dark";
-    } catch {
+    } catch (e) {
       return "dark";
     }
   });
@@ -233,7 +231,9 @@ export function EditorProvider({ children }) {
     try {
       localStorage.setItem(THEME_STORAGE_KEY, newTheme);
       document.documentElement.setAttribute("data-theme", newTheme);
-    } catch {}
+    } catch (e) {
+      // ignore
+    }
   }, []);
 
   useEffect(() => {
@@ -244,7 +244,7 @@ export function EditorProvider({ children }) {
   const [accentColor, setAccentColorState] = useState(() => {
     try {
       return localStorage.getItem("peaklyy-forge-accent") || "#ef4444";
-    } catch {
+    } catch (e) {
       return "#ef4444";
     }
   });
@@ -254,1216 +254,276 @@ export function EditorProvider({ children }) {
     try {
       localStorage.setItem("peaklyy-forge-accent", color);
       document.documentElement.style.setProperty("--red", color);
-    } catch {}
+    } catch (e) {
+      // ignore
+    }
   }, []);
 
-  // Toast Notification State
-  const [toast, setToast] = useState(null);
+  useEffect(() => {
+    document.documentElement.style.setProperty("--red", accentColor);
+  }, [accentColor]);
+
+  // Toast notifications
+  const [toast, setToast] = useState({ show: false, message: "", type: "info" });
   const showToast = useCallback((message, type = "info") => {
-    const id = Date.now();
-    setToast({ id, message, type });
+    setToast({ show: true, message, type });
     setTimeout(() => {
-      setToast((curr) => (curr?.id === id ? null : curr));
+      setToast({ show: false, message: "", type: "info" });
     }, 3200);
   }, []);
 
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const toggleFullscreen = useCallback(() => setIsFullscreen((prev) => !prev), []);
-
+  // Modals & Panels
   const [isCommandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [isSettingsOpen, setSettingsOpen] = useState(false);
   const [targetErrorLine, setTargetErrorLine] = useState(null);
 
   const jumpToErrorLine = useCallback((line, col = 1) => {
-    if (line) {
-      setTargetErrorLine({ line, col, timestamp: Date.now() });
-    }
+    setTargetErrorLine({ line, col, timestamp: Date.now() });
   }, []);
 
-  // =========================================================================
-  // PROFILE, NOTIFICATIONS, COMPILER SETTINGS & ACTIVITY PERSISTENCE
-  // =========================================================================
-  const PROFILE_KEY = "peaklyy-forge-profile";
-  const NOTIFICATIONS_KEY = "peaklyy-forge-notifications";
-  const ACTIVITY_KEY = "peaklyy-forge-activity-stats";
-  const COMPILER_SETTINGS_KEY = "peaklyy-forge-compiler-settings";
-  const NOTIF_SETTINGS_KEY = "peaklyy-forge-notification-settings";
+  // File explorer & tab state
+  const [isFileExplorerOpen, setIsFileExplorerOpen] = useState(true);
+  const [isAddingFile, setIsAddingFile] = useState(false);
 
-  // 1. Profile State
+  // Profile and notifications
   const [profile, setProfileState] = useState(() => {
     try {
       return (
-        JSON.parse(localStorage.getItem(PROFILE_KEY)) || {
+        JSON.parse(localStorage.getItem("peaklyy-forge-profile")) || {
           displayName: "Gaurav",
-          title: "Developer",
-          bio: "Passionate about coding and learning new technologies.",
-          avatarUrl: "",
+          title: "Senior Software Engineer",
+          bio: "Passionate about algorithms, system architecture, and writing clean, reliable code.",
         }
       );
-    } catch {
-      return {
-        displayName: "Gaurav",
-        title: "Developer",
-        bio: "Passionate about coding and learning new technologies.",
-        avatarUrl: "",
-      };
+    } catch (e) {
+      return { displayName: "Gaurav", title: "Senior Software Engineer", bio: "Coding with Peaklyy Forge." };
     }
   });
 
-  const updateProfile = useCallback((newProfile) => {
+  const updateProfile = useCallback((updates) => {
     setProfileState((prev) => {
-      const updated = { ...prev, ...newProfile };
+      const updated = { ...prev, ...updates };
       try {
-        localStorage.setItem(PROFILE_KEY, JSON.stringify(updated));
-      } catch {}
+        localStorage.setItem("peaklyy-forge-profile", JSON.stringify(updated));
+      } catch (e) {
+        // ignore
+      }
       return updated;
     });
   }, []);
 
-  // 2. Activity Stats State
-  const [activityStats, setActivityStatsState] = useState(() => {
-    try {
-      return (
-        JSON.parse(localStorage.getItem(ACTIVITY_KEY)) || {
-          compilerRuns: 0,
-          practiceSessions: 0,
-          languagesUsed: [],
-          recentActivity: [],
-        }
-      );
-    } catch {
-      return {
-        compilerRuns: 0,
-        practiceSessions: 0,
-        languagesUsed: [],
-        recentActivity: [],
-      };
-    }
-  });
-
-  const recordActivity = useCallback(({ type, title, lang }) => {
-    setActivityStatsState((prev) => {
-      const compilerRuns = type === "compiler" ? (prev.compilerRuns || 0) + 1 : (prev.compilerRuns || 0);
-      const practiceSessions = type === "practice" ? (prev.practiceSessions || 0) + 1 : (prev.practiceSessions || 0);
-      const languagesUsed = Array.from(new Set([...(prev.languagesUsed || []), lang].filter(Boolean)));
-      
-      const newEntry = {
-        id: `act-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        type,
-        title,
-        timestamp: new Date().toISOString(),
-        lang: lang || "code",
-      };
-
-      const recentActivity = [newEntry, ...(prev.recentActivity || [])].slice(0, 15);
-
-      const updated = {
-        compilerRuns,
-        practiceSessions,
-        languagesUsed,
-        recentActivity,
-      };
-
-      try {
-        localStorage.setItem(ACTIVITY_KEY, JSON.stringify(updated));
-      } catch {}
-      return updated;
-    });
-  }, []);
-
-  const [problemsList, setProblemsList] = useState([]);
-
-  // Compute solved problems dynamically from problemsList
-  const problemsSolvedCount = useMemo(() => {
-    if (!Array.isArray(problemsList)) return 0;
-    return problemsList.filter((p) => p.isSolved || p.status === "SOLVED").length;
-  }, [problemsList]);
-
-  // 3. Notifications State
-  const [notifications, setNotificationsState] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem(NOTIFICATIONS_KEY)) || [];
-    } catch {
-      return [];
-    }
-  });
-
-  const unreadCount = useMemo(() => {
-    return notifications.filter((n) => !n.read).length;
-  }, [notifications]);
-
-  const addNotification = useCallback(({ title, message, type = "info" }) => {
-    setNotificationsState((prev) => {
-      const newNotif = {
-        id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        title,
-        message,
-        type,
-        time: new Date().toISOString(),
-        read: false,
-      };
-      const updated = [newNotif, ...prev].slice(0, 30);
-      try {
-        localStorage.setItem(NOTIFICATIONS_KEY, JSON.stringify(updated));
-      } catch {}
-      return updated;
-    });
-  }, []);
-
+  const [notifications, setNotifications] = useState([]);
+  const unreadCount = notifications.filter((n) => !n.read).length;
   const markNotificationRead = useCallback((id) => {
-    setNotificationsState((prev) => {
-      const updated = prev.map((n) => (n.id === id ? { ...n, read: true } : n));
-      try {
-        localStorage.setItem(NOTIFICATIONS_KEY, JSON.stringify(updated));
-      } catch {}
-      return updated;
-    });
+    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
   }, []);
-
   const markAllNotificationsRead = useCallback(() => {
-    setNotificationsState((prev) => {
-      const updated = prev.map((n) => ({ ...n, read: true }));
-      try {
-        localStorage.setItem(NOTIFICATIONS_KEY, JSON.stringify(updated));
-      } catch {}
-      return updated;
-    });
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
   }, []);
+  const clearNotifications = useCallback(() => setNotifications([]), []);
 
-  const clearNotifications = useCallback(() => {
-    setNotificationsState([]);
-    try {
-      localStorage.setItem(NOTIFICATIONS_KEY, JSON.stringify([]));
-    } catch {}
-  }, []);
-
-  // 4. Compiler Settings State
-  const [compilerSettings, setCompilerSettingsState] = useState(() => {
-    try {
-      return (
-        JSON.parse(localStorage.getItem(COMPILER_SETTINGS_KEY)) || {
-          defaultLanguage: "python",
-          executionTimeout: "10 seconds",
-          outputLimit: "1 MB",
-          interactiveStdin: true,
-        }
-      );
-    } catch {
-      return {
-        defaultLanguage: "python",
-        executionTimeout: "10 seconds",
-        outputLimit: "1 MB",
-        interactiveStdin: true,
-      };
-    }
+  const [compilerSettings, setCompilerSettings] = useState({
+    defaultTimeoutMs: 10000,
+    enableRealtimeInterception: true,
+    maxOutputSizeKb: 256,
   });
-
-  const updateCompilerSettings = useCallback((newSettings) => {
-    setCompilerSettingsState((prev) => {
-      const updated = { ...prev, ...newSettings };
-      try {
-        localStorage.setItem(COMPILER_SETTINGS_KEY, JSON.stringify(updated));
-      } catch {}
-      return updated;
-    });
+  const updateCompilerSettings = useCallback((updates) => {
+    setCompilerSettings((prev) => ({ ...prev, ...updates }));
   }, []);
 
-  // 5. Notification Settings State
-  const [notificationSettings, setNotificationSettingsState] = useState(() => {
-    try {
-      return (
-        JSON.parse(localStorage.getItem(NOTIF_SETTINGS_KEY)) || {
-          execution: true,
-          practice: true,
-          system: true,
-        }
-      );
-    } catch {
-      return { execution: true, practice: true, system: true };
-    }
+  const [notificationSettings, setNotificationSettings] = useState({
+    executionSuccess: true,
+    executionError: true,
   });
-
-  const updateNotificationSettings = useCallback((newSettings) => {
-    setNotificationSettingsState((prev) => {
-      const updated = { ...prev, ...newSettings };
-      try {
-        localStorage.setItem(NOTIF_SETTINGS_KEY, JSON.stringify(updated));
-      } catch {}
-      return updated;
-    });
+  const updateNotificationSettings = useCallback((updates) => {
+    setNotificationSettings((prev) => ({ ...prev, ...updates }));
   }, []);
 
-  // 6. Reset Preferences
   const resetPreferences = useCallback(() => {
-    const defaultEditor = {
-      fontSize: 14,
-      tabSize: 2,
-      wordWrap: "on",
-      minimap: false,
-      lineNumbers: "on",
-      autoSave: true,
-    };
-    const defaultCompiler = {
-      defaultLanguage: "python",
-      executionTimeout: "10 seconds",
-      outputLimit: "1 MB",
-      interactiveStdin: true,
-    };
-    const defaultNotif = {
-      execution: true,
-      practice: true,
-      system: true,
-    };
+    localStorage.removeItem("peaklyy-forge-editor-settings");
+    localStorage.removeItem(THEME_STORAGE_KEY);
+    localStorage.removeItem("peaklyy-forge-accent");
+    setTheme("dark");
+    setAccentColor("#ef4444");
+    showToast("Preferences reset to default.", "info");
+  }, [setTheme, setAccentColor, showToast]);
 
-    setEditorSettingsState(defaultEditor);
-    setCompilerSettingsState(defaultCompiler);
-    setNotificationSettingsState(defaultNotif);
-    setThemeState("dark");
-    setAccentColorState("#ef4444");
-    document.documentElement.setAttribute("data-theme", "dark");
-    document.documentElement.style.setProperty("--red", "#ef4444");
+  // Derived active file
+  const activeFile = (project?.files || []).find((f) => f.id === project?.activeFileId) || project?.files?.[0] || null;
 
-    try {
-      localStorage.setItem("peaklyy-forge-editor-settings", JSON.stringify(defaultEditor));
-      localStorage.setItem(COMPILER_SETTINGS_KEY, JSON.stringify(defaultCompiler));
-      localStorage.setItem(NOTIF_SETTINGS_KEY, JSON.stringify(defaultNotif));
-      localStorage.setItem(THEME_STORAGE_KEY, "dark");
-      localStorage.setItem("peaklyy-forge-accent", "#ef4444");
-    } catch {}
-
-    showToast("Preferences reset to default values.", "success");
-  }, [showToast]);
-
-  const [isFileExplorerOpen, setIsFileExplorerOpenState] = useState(() => {
-    try {
-      const saved = localStorage.getItem("peaklyy-forge-file-explorer-open");
-      return saved !== null ? JSON.parse(saved) : true;
-    } catch {
-      return true;
-    }
-  });
-
-  const setIsFileExplorerOpen = useCallback((val) => {
-    setIsFileExplorerOpenState((prev) => {
-      const nextVal = typeof val === "function" ? val(prev) : val;
-      try {
-        localStorage.setItem("peaklyy-forge-file-explorer-open", JSON.stringify(nextVal));
-      } catch {}
-      return nextVal;
-    });
-  }, []);
-
-  const [isAddingFile, setIsAddingFile] = useState(false);
-
-  const openNewFileInput = useCallback(() => {
-    setIsFileExplorerOpen(true);
-    setIsAddingFile(true);
-  }, [setIsFileExplorerOpen]);
-
-  // Multi-File Project Methods
-  const activeFile = useMemo(() => {
-    if (!project) return null;
-    const ensured = ensureProjectFiles(project);
-    if (!ensured) return null;
-    return (
-      ensured.files?.find((f) => f.id === ensured.activeFileId) ||
-      ensured.files?.[0] ||
-      null
-    );
-  }, [project]);
-
-  const addProjectFile = useCallback((fileName, initialContent = null, isStandalone = true) => {
-    if (!fileName || typeof fileName !== "string") return;
-    const cleanName = fileName.replace(/[^a-zA-Z0-9_.-]/g, "_").trim();
-    if (!cleanName) return;
-
-    setIsFileExplorerOpen(true);
-    setProject((current) => {
-      const ensured = ensureProjectFiles(current);
-      const exists = ensured.files?.some((f) => f.name.toLowerCase() === cleanName.toLowerCase());
-      if (exists) {
-        const existing = ensured.files.find((f) => f.name.toLowerCase() === cleanName.toLowerCase());
-        const openIds = ensured.openFileIds || [];
-        const updatedOpen = openIds.includes(existing.id) ? openIds : [...openIds, existing.id];
-        return { ...ensured, activeFileId: existing.id, openFileIds: updatedOpen };
-      }
-
-      const fileLang = getFileLanguage(cleanName, null);
-      const isRunnable = RUNNABLE_LANGUAGES.includes(fileLang);
-      const starter = initialContent !== null ? initialContent : (isRunnable ? (starterCode[fileLang] || "") : "");
-      const newId = `file-${crypto.randomUUID().substring(0, 8)}`;
-      const newFile = { id: newId, name: cleanName, content: starter, isEntry: false, isStandalone: Boolean(isStandalone) };
-      const openIds = ensured.openFileIds || [];
-      return {
-        ...ensured,
-        activeFileId: newId,
-        openFileIds: [...openIds, newId],
-        files: [...(ensured.files || []), newFile],
-        updatedAt: new Date().toISOString(),
-      };
-    });
-    showToast(`Created file "${cleanName}".`, "success");
-  }, [showToast, setIsFileExplorerOpen]);
-
-  const createIndividualFile = useCallback((fileName = "main.py", initialContent = null, forcedLang = null) => {
-    const cleanName = (fileName || "").trim() || "main.py";
-    const currentProjects = readProjects();
-    const isDuplicate = currentProjects.some(
-      (p) => p?.name?.toLowerCase() === cleanName.toLowerCase() || (p?.files || []).some((f) => f.name?.toLowerCase() === cleanName.toLowerCase())
-    );
-
-    if (isDuplicate) {
-      showToast(`A file or project named "${cleanName}" already exists.`, "error");
-      return;
-    }
-
-    const fileLang = forcedLang || getFileLanguage(cleanName, "python");
-    const isRunnable = RUNNABLE_LANGUAGES.includes(fileLang);
-    const starter = initialContent !== null ? initialContent : (isRunnable ? (starterCode[fileLang] || "") : "");
-    const entryId = `file-${crypto.randomUUID().substring(0, 8)}`;
-    const newProj = {
-      id: crypto.randomUUID(),
-      name: cleanName,
-      isSingleFile: true,
-      language: fileLang,
-      ...starterCode,
-      [fileLang]: starter,
-      activeFileId: entryId,
-      openFileIds: [entryId],
-      files: [
-        { id: entryId, name: cleanName, content: starter, isEntry: true, isStandalone: true }
-      ],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    const updated = [newProj, ...currentProjects.filter((p) => p && p.id !== newProj.id)];
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-    } catch {}
-    setProjects(updated);
-    setProject(newProj);
-    try {
-      localStorage.setItem(ACTIVE_KEY, newProj.id);
-    } catch {}
-    setIsFileExplorerOpen(true);
-    setProjectDialogOpen(false);
-    showToast(`Created individual file "${cleanName}".`, "success");
-  }, [showToast, setIsFileExplorerOpen]);
-
-  const switchToFile = useCallback((targetProjectId, targetFileId) => {
-    setProjects((previous) => {
-      const targetProj = previous.find((p) => p.id === targetProjectId);
-      if (!targetProj) return previous;
-
-      const ensured = ensureProjectFiles(targetProj);
-      const targetId = targetFileId || ensured.activeFileId || ensured.files[0]?.id;
-      const openIds = ensured.openFileIds || [];
-      const updatedOpen = targetId && !openIds.includes(targetId) ? [...openIds, targetId] : openIds;
-
-      const updatedProj = {
-        ...ensured,
-        activeFileId: targetId,
-        openFileIds: updatedOpen,
-      };
-
-      setProject(updatedProj);
-      try {
-        localStorage.setItem(ACTIVE_KEY, targetProjectId);
-      } catch {}
-      return previous.map((p) => (p.id === targetProjectId ? updatedProj : p));
-    });
-  }, []);
-
-  // Close tab from top editor tab bar ONLY (does NOT delete file from File Explorer/project)
-  const closeEditorTab = useCallback((fileId) => {
-    setProject((current) => {
-      const ensured = ensureProjectFiles(current);
-      const openIds = (ensured.openFileIds || []).filter((id) => (ensured.files || []).some((f) => f.id === id));
-      const remainingOpen = openIds.filter((id) => id !== fileId);
-
-      let nextActive = ensured.activeFileId;
-      if (ensured.activeFileId === fileId) {
-        if (remainingOpen.length > 0) {
-          const closedIdx = openIds.indexOf(fileId);
-          const nextIdx = Math.min(Math.max(0, closedIdx), remainingOpen.length - 1);
-          nextActive = remainingOpen[nextIdx];
-        } else {
-          // If all tabs were closed, fallback to entry file or first available file
-          const firstFile = ensured.files[0];
-          if (firstFile) {
-            nextActive = firstFile.id;
-            remainingOpen.push(firstFile.id);
-          }
-        }
-      }
-
-      return {
-        ...ensured,
-        activeFileId: nextActive,
-        openFileIds: remainingOpen,
-      };
-    });
-  }, []);
-
-  // Delete file permanently from project & File Explorer
-  const deleteProjectFile = useCallback((fileId, parentProjId = null) => {
-    // 1. Update projects list and sync to localStorage
+  // Persist project changes to projects list & local storage
+  const persistProject = useCallback((nextProj) => {
+    if (!nextProj) return;
     setProjects((prev) => {
-      const updated = prev.map((p) => {
-        const isTarget = parentProjId ? p.id === parentProjId : (p.files || []).some((f) => f.id === fileId);
-        if (isTarget) {
-          const ensured = ensureProjectFiles(p);
-          if ((ensured.files || []).length <= 1) return p;
-
-          const remainingFiles = (ensured.files || []).filter((f) => f.id !== fileId);
-          // If the deleted file was entry, make the first remaining file the entry
-          if (remainingFiles.length > 0 && !remainingFiles.some((f) => f.isEntry)) {
-            remainingFiles[0] = { ...remainingFiles[0], isEntry: true };
-          }
-
-          const remainingOpen = (ensured.openFileIds || []).filter((id) => id !== fileId);
-          let nextActive = ensured.activeFileId;
-          if (ensured.activeFileId === fileId) {
-            if (remainingOpen.length > 0) {
-              nextActive = remainingOpen[0];
-            } else {
-              nextActive = remainingFiles[0]?.id;
-              remainingOpen.push(remainingFiles[0]?.id);
-            }
-          }
-          return {
-            ...ensured,
-            activeFileId: nextActive,
-            openFileIds: remainingOpen,
-            files: remainingFiles,
-            updatedAt: new Date().toISOString(),
-          };
-        }
-        return p;
-      });
+      const exists = prev.some((p) => p.id === nextProj.id);
+      const updated = exists ? prev.map((p) => (p.id === nextProj.id ? nextProj : p)) : [nextProj, ...prev];
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-      } catch {}
+        localStorage.setItem(ACTIVE_KEY, nextProj.id);
+      } catch (e) {
+        // ignore
+      }
       return updated;
     });
+  }, []);
 
-    // 2. Update current active project state if affected
-    setProject((current) => {
-      const isTarget = parentProjId ? current.id === parentProjId : (current.files || []).some((f) => f.id === fileId);
-      if (!isTarget) return current;
-
-      const ensured = ensureProjectFiles(current);
-      if ((ensured.files || []).length <= 1) return current;
-
-      const remainingFiles = (ensured.files || []).filter((f) => f.id !== fileId);
-      if (remainingFiles.length > 0 && !remainingFiles.some((f) => f.isEntry)) {
-        remainingFiles[0] = { ...remainingFiles[0], isEntry: true };
-      }
-
-      const remainingOpen = (ensured.openFileIds || []).filter((id) => id !== fileId);
-      let nextActive = ensured.activeFileId;
-
-      if (ensured.activeFileId === fileId) {
-        if (remainingOpen.length > 0) {
-          nextActive = remainingOpen[0];
-        } else {
-          nextActive = remainingFiles[0]?.id;
-          remainingOpen.push(remainingFiles[0]?.id);
-        }
-      }
-
-      return {
-        ...ensured,
-        activeFileId: nextActive,
-        openFileIds: remainingOpen,
-        files: remainingFiles,
-        updatedAt: new Date().toISOString(),
-      };
-    });
-
-    showToast("Subfile deleted successfully.", "info");
-  }, [showToast]);
-
-  const renameProjectFile = useCallback((fileId, newName) => {
-    if (!newName) return;
-    const cleanName = newName.replace(/[^a-zA-Z0-9_.-]/g, "_").trim();
-    if (!cleanName) return;
-
-    setProject((current) => {
-      if (!current) return current;
-      const ensured = ensureProjectFiles(current);
-      const updated = (ensured.files || []).map((f) => (f.id === fileId ? { ...f, name: cleanName } : f));
+  // Update active file code content
+  const updateCode = useCallback((newContent) => {
+    setProject((prev) => {
+      if (!prev) return prev;
+      const ensured = ensureProjectFiles(prev);
+      const currentFileId = ensured.activeFileId;
+      const targetFile = (ensured.files || []).find((f) => f.id === currentFileId);
+      const fileLang = targetFile ? getFileLanguage(targetFile.name, ensured.language) : ensured.language;
+      const updatedFiles = (ensured.files || []).map((f) =>
+        f.id === currentFileId ? { ...f, content: newContent } : f
+      );
       const nextProj = {
-        ...ensured,
-        name: ensured.isSingleFile ? cleanName : ensured.name,
-        files: updated,
-        updatedAt: new Date().toISOString(),
-      };
-      setProjects((prev) => {
-        const up = prev.map((p) => (p.id === nextProj.id ? nextProj : p));
-        try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(up));
-        } catch {}
-        return up;
-      });
-      return nextProj;
-    });
-  }, []);
-
-  const selectProjectFile = useCallback((fileId) => {
-    setProject((current) => {
-      const ensured = ensureProjectFiles(current);
-      const target = (ensured.files || []).find((f) => f.id === fileId);
-      if (!target) return current;
-
-      const openIds = ensured.openFileIds || [];
-      const updatedOpen = openIds.includes(fileId) ? openIds : [...openIds, fileId];
-
-      return {
-        ...ensured,
-        activeFileId: fileId,
-        openFileIds: updatedOpen,
-      };
-    });
-  }, []);
-
-  // =========================================================================
-  // P1 ONLINE JUDGE STATE (Persisted across refreshes)
-  // =========================================================================
-  const [practiceViewMode, setPracticeViewModeState] = useState(() => {
-    try {
-      return localStorage.getItem(PRACTICE_VIEW_MODE_KEY) || "workspace";
-    } catch {
-      return "workspace";
-    }
-  });
-
-  const setPracticeViewMode = useCallback((mode) => {
-    setPracticeViewModeState(mode);
-    try {
-      localStorage.setItem(PRACTICE_VIEW_MODE_KEY, mode);
-    } catch {}
-  }, []);
-
-  const [selectedProblemId, setSelectedProblemIdState] = useState(() => {
-    try {
-      return localStorage.getItem(PRACTICE_PROBLEM_ID_KEY) || "two-sum";
-    } catch {
-      return "two-sum";
-    }
-  });
-
-  const setSelectedProblemId = useCallback((id) => {
-    setSelectedProblemIdState(id);
-    try {
-      localStorage.setItem(PRACTICE_PROBLEM_ID_KEY, id);
-    } catch {}
-  }, []);
-
-  const [selectedProblem, setSelectedProblem] = useState(null);
-  const [practiceLang, setPracticeLangState] = useState(() => {
-    try {
-      return localStorage.getItem(PRACTICE_LANG_KEY) || "python";
-    } catch {
-      return "python";
-    }
-  });
-
-  const setPracticeLang = useCallback((lang) => {
-    setPracticeLangState(lang);
-    try {
-      localStorage.setItem(PRACTICE_LANG_KEY, lang);
-    } catch {}
-  }, []);
-  const [practiceCode, setPracticeCode] = useState("");
-  const [draftStatus, setDraftStatus] = useState("saved"); // 'saving' | 'saved' | 'offline'
-  const [lastSavedTime, setLastSavedTime] = useState("");
-
-  const [isJudgeRunning, setIsJudgeRunning] = useState(false);
-  const [isJudgeSubmitting, setIsJudgeSubmitting] = useState(false);
-  const [runResults, setRunResults] = useState(null);
-  const [customInput, setCustomInput] = useState("");
-  const [customResult, setCustomResult] = useState(null);
-  const [submissionResult, setSubmissionResult] = useState(null);
-  const [submissionsList, setSubmissionsList] = useState([]);
-  const [activeSubmissionModal, setActiveSubmissionModal] = useState(null);
-
-  // 1. Fetch Problem Catalog
-  const reloadProblems = useCallback(async (filters = {}) => {
-    try {
-      const data = await fetchProblems(filters);
-      if (data.success && Array.isArray(data.problems)) {
-        setProblemsList(data.problems);
-      }
-    } catch (err) {
-      console.error("Failed to load problems list:", err);
-    }
-  }, []);
-
-  useEffect(() => {
-    reloadProblems();
-  }, [reloadProblems]);
-
-  // 2. Load Selected Problem Details & Draft
-  const loadProblem = useCallback(async (problemId, lang = practiceLang) => {
-    setSelectedProblemId(problemId);
-    try {
-      const data = await fetchProblem(problemId);
-      if (data.success && data.problem) {
-        setSelectedProblem(data.problem);
-
-        // Check for saved draft: server first, then local fallback, then starter code
-        let initialCode = "";
-        try {
-          const draftRes = await fetchProblemDraft(problemId, lang);
-          if (draftRes.success && draftRes.draft?.code) {
-            initialCode = draftRes.draft.code;
-          }
-        } catch {
-          // Network fail: fallback to local storage
-          const local = getLocalDraft(problemId, lang);
-          if (local?.code) {
-            initialCode = local.code;
-            setDraftStatus("offline");
-          }
-        }
-
-        const starter = data.problem.starterCode?.[lang] || data.problem.starterCode?.python || "";
-
-        if (!initialCode) {
-          initialCode = starter;
-        } else {
-          initialCode = cleanLegacyCode(initialCode, starter);
-        }
-
-        setPracticeCode(initialCode);
-        setRunResults(null);
-        setCustomResult(null);
-        setSubmissionResult(null);
-
-        // Load submission history for this problem
-        try {
-          const subData = await fetchProblemSubmissions(problemId);
-          if (subData.success) {
-            setSubmissionsList(subData.submissions || []);
-          }
-        } catch { }
-      }
-    } catch (err) {
-      console.error("Failed to load problem detail:", err);
-    }
-  }, [practiceLang]);
-
-  useEffect(() => {
-    loadProblem(selectedProblemId, practiceLang);
-  }, [selectedProblemId, loadProblem]);
-
-  // 3. Debounced Auto-Save Draft
-  const saveTimeoutRef = useRef(null);
-  const handlePracticeCodeChange = (newCode) => {
-    setPracticeCode(newCode);
-    setDraftStatus("saving");
-
-    // Immediately update local recovery layer
-    setLocalDraft(selectedProblemId, practiceLang, newCode);
-
-    if (saveTimeoutRef.current) {
-      clearTimeout(saveTimeoutRef.current);
-    }
-
-    saveTimeoutRef.current = setTimeout(async () => {
-      try {
-        await saveProblemDraft(selectedProblemId, {
-          language: practiceLang,
-          code: newCode,
-        });
-        setDraftStatus("saved");
-        setLastSavedTime(`Saved at ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`);
-      } catch {
-        setDraftStatus("offline");
-        setLastSavedTime("Offline — saved locally");
-      }
-    }, 800);
-  };
-
-  // 4. Change Practice Language
-  const changePracticeLanguage = async (newLang) => {
-    setPracticeLang(newLang);
-    const starter = selectedProblem?.starterCode?.[newLang] || "";
-
-    // Load draft for new language
-    try {
-      const draftRes = await fetchProblemDraft(selectedProblemId, newLang);
-      if (draftRes.success && draftRes.draft?.code) {
-        setPracticeCode(cleanLegacyCode(draftRes.draft.code, starter));
-        return;
-      }
-    } catch { }
-
-    const local = getLocalDraft(selectedProblemId, newLang);
-    if (local?.code) {
-      setPracticeCode(cleanLegacyCode(local.code, starter));
-      return;
-    }
-
-    if (starter) {
-      setPracticeCode(starter);
-    }
-  };
-
-  // 5. Run Problem Code (Sample Test Cases)
-  const runJudge = async () => {
-    if (isJudgeRunning || !selectedProblemId) return;
-    setIsJudgeRunning(true);
-    setRunResults(null);
-    setCustomResult(null);
-
-    try {
-      const res = await runJudgeCode(selectedProblemId, {
-        language: practiceLang,
-        code: practiceCode,
-      });
-      setRunResults(res);
-    } catch (err) {
-      setRunResults({
-        verdict: "SYSTEM_ERROR",
-        error: err.response?.data?.error || err.message || "Failed to execute test cases.",
-        testResults: [],
-      });
-    } finally {
-      setIsJudgeRunning(false);
-    }
-  };
-
-  // 6. Run Custom Input
-  const runJudgeCustom = async () => {
-    if (isJudgeRunning || !selectedProblemId) return;
-    setIsJudgeRunning(true);
-    setCustomResult(null);
-
-    try {
-      const res = await runJudgeCode(selectedProblemId, {
-        language: practiceLang,
-        code: practiceCode,
-        customInput: customInput || "",
-      });
-      setCustomResult(res);
-    } catch (err) {
-      setCustomResult({
-        status: "SYSTEM_ERROR",
-        output: "",
-        error: err.response?.data?.error || err.message,
-      });
-    } finally {
-      setIsJudgeRunning(false);
-    }
-  };
-
-  // 7. Submit Solution (All Test Cases + Persistent Record)
-  const submitJudge = async () => {
-    if (isJudgeSubmitting || !selectedProblemId) return;
-    setIsJudgeSubmitting(true);
-    setSubmissionResult(null);
-
-    try {
-      const res = await submitJudgeSolution(selectedProblemId, {
-        language: practiceLang,
-        code: practiceCode,
-      });
-      setSubmissionResult(res);
-
-      // Refresh submissions list and problem catalog (to update solved badges)
-      const subData = await fetchProblemSubmissions(selectedProblemId);
-      if (subData.success) {
-        setSubmissionsList(subData.submissions || []);
-      }
-      reloadProblems();
-    } catch (err) {
-      setSubmissionResult({
-        verdict: "SYSTEM_ERROR",
-        score: 0,
-        passedTests: 0,
-        totalTests: 0,
-        error: err.response?.data?.error || err.message || "Submission failed.",
-      });
-    } finally {
-      setIsJudgeSubmitting(false);
-    }
-  };
-
-  // 8. Restore Code from Previous Submission
-  const restorePreviousCode = (submission) => {
-    if (!submission?.code) return;
-    const confirm = window.confirm(
-      `Are you sure you want to restore code from submission #${submission.submissionId}?\nThis will overwrite your current editor draft.`
-    );
-    if (confirm) {
-      if (submission.language) {
-        setPracticeLang(submission.language);
-      }
-      handlePracticeCodeChange(submission.code);
-      setActiveSubmissionModal(null);
-    }
-  };
-
-  // 9. Open Problem into Workspace View
-  const openProblem = (problemId) => {
-    loadProblem(problemId);
-    setPracticeViewMode("workspace");
-  };
-
-  // 10. Back to Problem Catalog List View
-  const backToProblemCatalog = () => {
-    setPracticeViewMode("catalog");
-  };
-
-  // 11. Navigate Prev / Next Problem
-  const goToPrevProblem = () => {
-    if (!problemsList.length) return;
-    const currentIndex = problemsList.findIndex((p) => p.id === selectedProblemId);
-    if (currentIndex > 0) {
-      openProblem(problemsList[currentIndex - 1].id);
-    }
-  };
-
-  const goToNextProblem = () => {
-    if (!problemsList.length) return;
-    const currentIndex = problemsList.findIndex((p) => p.id === selectedProblemId);
-    if (currentIndex >= 0 && currentIndex < problemsList.length - 1) {
-      openProblem(problemsList[currentIndex + 1].id);
-    }
-  };
-
-  // 12. Pick Random Problem
-  const pickRandomProblem = () => {
-    if (!problemsList.length) return;
-    const randomIndex = Math.floor(Math.random() * problemsList.length);
-    openProblem(problemsList[randomIndex].id);
-  };
-
-  // 13. Reset Code to Official Starter Code
-  const resetPracticeStarterCode = () => {
-    if (!selectedProblem) return;
-    const starter = selectedProblem.starterCode?.[practiceLang] || "";
-    if (window.confirm("Are you sure you want to reset your code to the starter template?")) {
-      handlePracticeCodeChange(starter);
-    }
-  };
-
-  // =========================================================================
-  // P0 COMPILER FUNCTIONS (PRESERVED)
-  // =========================================================================
-  useEffect(() => {
-    if (!project) {
-      try {
-        localStorage.removeItem(ACTIVE_KEY);
-      } catch {}
-      return;
-    }
-    const timer = setTimeout(() => {
-      const next = { ...project, updatedAt: new Date().toISOString() };
-      setProjects((previous) => {
-        const exists = previous.some((item) => item.id === next.id);
-        const all = exists
-          ? previous.map((item) => (item.id === next.id ? next : item))
-          : [next, ...previous];
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
-        return all;
-      });
-      localStorage.setItem(ACTIVE_KEY, project.id);
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [project]);
-
-  const updateCode = useCallback((value) => {
-    const newContent = value ?? "";
-    setProject((current) => {
-      if (!current) return current;
-      const ensured = ensureProjectFiles(current);
-      const activeId = ensured.activeFileId || ensured.files?.[0]?.id;
-
-      const updatedFiles = (ensured.files || []).map((f) => {
-        if (f.id === activeId) {
-          return { ...f, content: newContent };
-        }
-        return f;
-      });
-
-      const activeFileObj = updatedFiles.find((f) => f.id === activeId);
-      const fileLang = activeFileObj ? getFileLanguage(activeFileObj.name, current.language) : current.language;
-
-      return {
         ...ensured,
         [fileLang]: newContent,
         files: updatedFiles,
         updatedAt: new Date().toISOString(),
       };
+      persistProject(nextProj);
+      return nextProj;
     });
-  }, []);
+  }, [persistProject]);
 
-  const setLanguage = useCallback((newLang, directFileName = null) => {
+  /**
+   * Safe Language Selection:
+   * Synchronizes language, file extension, filename, starter template, and Monaco syntax.
+   * Never silently discards user-written modifications or mutates existing files.
+   */
+  const setLanguage = useCallback((newLang) => {
     if (!newLang) return;
-    if (directFileName) {
-      createIndividualFile(directFileName, null, newLang);
-    } else {
-      openCreateFileDialog(newLang);
-    }
-  }, [openCreateFileDialog, createIndividualFile]);
+    const meta = languageMeta[newLang] || languageMeta.python;
+    const targetFileName = meta.defaultFileName || `main.${meta.extension || "py"}`;
+    const newStarter = starterCode[newLang] || "";
 
-  const resetCurrentFile = useCallback(() => {
-    setProject((current) => {
-      const ensured = ensureProjectFiles(current);
-      const targetLang = current.language;
-      const starter = starterCode[targetLang] || "";
-      const updatedFiles = (ensured.files || []).map((f) =>
-        f.id === (ensured.activeFileId || ensured.files[0]?.id) ? { ...f, content: starter } : f
+    setProject((prev) => {
+      if (!prev) return makeProject("My Project", newLang);
+      const ensured = ensureProjectFiles(prev);
+      const updatedFiles = [...(ensured.files || [])];
+      const openIds = Array.isArray(ensured.openFileIds) ? [...ensured.openFileIds] : [];
+
+      // Check if the currently active file is already this language
+      const currentActive = updatedFiles.find((f) => f.id === ensured.activeFileId) || updatedFiles[0];
+      const currentActiveLang = currentActive ? getFileLanguage(currentActive.name, null) : null;
+      if (currentActiveLang === newLang) {
+        const nextProj = {
+          ...ensured,
+          language: newLang,
+          activeFileId: currentActive?.id || ensured.activeFileId,
+        };
+        persistProject(nextProj);
+        return nextProj;
+      }
+
+      // Check if another file for this language already exists in project files
+      const existingLangFile = updatedFiles.find(
+        (f) => getFileLanguage(f.name, null) === newLang
       );
-      return {
-        ...ensured,
-        [targetLang]: starter,
-        files: updatedFiles,
-      };
-    });
-  }, []);
 
+      let nextActiveId;
+      if (existingLangFile) {
+        // Activate existing file without modifying it or any other file!
+        nextActiveId = existingLangFile.id;
+        if (!openIds.includes(nextActiveId)) {
+          openIds.push(nextActiveId);
+        }
+      } else {
+        // No file for this language exists yet: create a new file while keeping all existing files intact
+        let candidateName = targetFileName;
+        let counter = 1;
+        while (updatedFiles.some((f) => f.name.toLowerCase() === candidateName.toLowerCase())) {
+          const dotIdx = candidateName.lastIndexOf(".");
+          const base = dotIdx !== -1 ? candidateName.substring(0, dotIdx) : candidateName;
+          const ext = meta.extension || "txt";
+          candidateName = `${base}_${counter}.${ext}`;
+          counter++;
+        }
+
+        const newFileId = `file-${crypto.randomUUID().substring(0, 8)}`;
+        const newFile = {
+          id: newFileId,
+          name: candidateName,
+          content: prev[newLang] || newStarter,
+          isEntry: true,
+        };
+        updatedFiles.push(newFile);
+        nextActiveId = newFileId;
+        if (!openIds.includes(nextActiveId)) {
+          openIds.push(nextActiveId);
+        }
+      }
+
+      const nextProj = {
+        ...ensured,
+        language: newLang,
+        [newLang]: prev[newLang] || newStarter,
+        files: updatedFiles,
+        activeFileId: nextActiveId,
+        openFileIds: openIds,
+        updatedAt: new Date().toISOString(),
+      };
+
+      persistProject(nextProj);
+      return nextProj;
+    });
+
+    showToast(`Switched language to ${meta.label}`, "info");
+  }, [persistProject, showToast]);
+
+  // Reset active file to clean starter template
+  const resetCurrentFile = useCallback(() => {
+    setProject((prev) => {
+      if (!prev) return prev;
+      const ensured = ensureProjectFiles(prev);
+      const currentActive = ensured.files?.find((f) => f.id === ensured.activeFileId);
+      const activeLang = getFileLanguage(currentActive?.name, ensured.language);
+      const cleanStarter = starterCode[activeLang] || starterCode[ensured.language] || "";
+
+      const updatedFiles = (ensured.files || []).map((f) =>
+        f.id === ensured.activeFileId ? { ...f, content: cleanStarter } : f
+      );
+
+      const nextProj = {
+        ...ensured,
+        [ensured.language]: cleanStarter,
+        files: updatedFiles,
+        updatedAt: new Date().toISOString(),
+      };
+      persistProject(nextProj);
+      return nextProj;
+    });
+    showToast("Reset to starter template.", "info");
+  }, [persistProject, showToast]);
+
+  // Clear Output Console (with confirmation protection)
   const clearOutput = useCallback(() => {
     setOutput(initialOutput);
-  }, []);
+    showToast("Output console cleared.", "info");
+  }, [showToast]);
 
+  // Clear Standard Input (with confirmation protection)
+  const clearStdin = useCallback(() => {
+    setStdin("");
+    showToast("Standard input cleared.", "info");
+  }, [setStdin, showToast]);
+
+  // Clear Terminal Prompt & Stream History
   const clearTerminal = useCallback(() => {
     setTerminalHistory([]);
     setActivePrompt("");
     setIsWaitingForInput(false);
-    pendingPasteQueueRef.current = [];
   }, []);
 
-  const clearStdin = useCallback(() => {
-    setStdin("");
-  }, []);
-
-  const createProject = useCallback((name, language = "python") => {
-    const next = makeProject(name, language);
-    setProject(next);
-    setProjectDialogOpen(false);
-    showToast(`Project "${next.name}" created.`, "success");
-  }, [showToast]);
-
-  const openProject = useCallback((item) => {
-    setProject(item);
-    setProjectDialogOpen(false);
-    showToast(`Opened project "${item.name}".`, "info");
-  }, [showToast]);
-
-  const renameProject = useCallback(
-    (idOrName, maybeName) => {
-      const targetId = maybeName !== undefined ? idOrName : project?.id;
-      const finalName = (maybeName !== undefined ? maybeName : idOrName)?.trim() || "Untitled project";
-
-      setProjects((previous) => {
-        const updated = previous.map((item) =>
-          item.id === targetId ? { ...item, name: finalName, updatedAt: new Date().toISOString() } : item
-        );
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-        return updated;
-      });
-
-      setProject((current) =>
-        current?.id === targetId ? { ...current, name: finalName, updatedAt: new Date().toISOString() } : current
-      );
-      showToast(`Renamed project to "${finalName}".`, "success");
-    },
-    [project?.id, showToast]
-  );
-
-  const importProject = useCallback((item) => {
-    if (!item?.name || !item?.language) throw new Error("Invalid project structure");
-    const next = { ...makeProject(item.name), ...item, id: crypto.randomUUID() };
-    setProject(next);
-    showToast(`Imported project "${next.name}".`, "success");
-  }, [showToast]);
-
-  const importLocalFolder = useCallback((folderName, filesList = []) => {
-    if (!filesList || filesList.length === 0) return;
-    const cleanFolderName = folderName?.trim() || "Imported Project";
-
-    // Identify entry file
-    const entryIdx = filesList.findIndex((f) =>
-      /^(main|index|app|solution)\.(py|java|js|jsx|ts|tsx|html|cpp|c)$/i.test(f.name)
-    );
-    const primaryIdx = entryIdx >= 0 ? entryIdx : 0;
-
-    const formattedFiles = filesList.map((f, idx) => ({
-      id: `file-${crypto.randomUUID().substring(0, 8)}`,
-      name: f.name,
-      content: typeof f.content === "string" ? f.content : "",
-      isEntry: idx === primaryIdx,
-      isStandalone: false,
-    }));
-
-    const mainFile = formattedFiles[primaryIdx];
-    const detectedLang = getFileLanguage(mainFile.name, "python");
-    const entryId = mainFile.id;
-
-    const newProject = {
-      id: crypto.randomUUID(),
-      name: cleanFolderName,
-      language: detectedLang,
-      isSingleFile: false,
-      files: formattedFiles,
-      activeFileId: entryId,
-      openFileIds: [entryId],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    setProjects((prev) => {
-      const updated = [newProject, ...prev];
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-      } catch {}
-      return updated;
-    });
-
-    setProject(newProject);
-    try {
-      localStorage.setItem(ACTIVE_KEY, newProject.id);
-    } catch {}
-
-    setIsFileExplorerOpen(true);
-    showToast(`Imported folder "${cleanFolderName}" (${formattedFiles.length} files).`, "success");
-  }, [showToast, setIsFileExplorerOpen]);
-
-  const importLocalFiles = useCallback((filesList = [], targetProjectId = null) => {
-    if (!filesList || filesList.length === 0) return;
-
-    const activeProjIsFolder = project && !project.isSingleFile;
-    const targetId = targetProjectId || (activeProjIsFolder ? project.id : null);
-
-    if (targetId) {
-      // Import into project
-      const newFiles = filesList.map((f) => ({
-        id: `file-${crypto.randomUUID().substring(0, 8)}`,
-        name: f.name,
-        content: typeof f.content === "string" ? f.content : "",
-        isEntry: false,
-        isStandalone: false,
-      }));
-
-      setProjects((prev) => {
-        const updated = prev.map((p) => {
-          if (p.id === targetId) {
-            const currentFiles = p.files || [];
-            const mergedFiles = [...currentFiles, ...newFiles];
-            const newActiveId = newFiles[0]?.id || p.activeFileId;
-            const openIds = Array.from(new Set([...(p.openFileIds || []), newActiveId]));
-            return {
-              ...p,
-              files: mergedFiles,
-              activeFileId: newActiveId,
-              openFileIds: openIds,
-              updatedAt: new Date().toISOString(),
-            };
-          }
-          return p;
-        });
-        try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-        } catch {}
-        return updated;
-      });
-
-      setProject((curr) => {
-        if (curr.id === targetId) {
-          const currentFiles = curr.files || [];
-          const mergedFiles = [...currentFiles, ...newFiles];
-          const newActiveId = newFiles[0]?.id || curr.activeFileId;
-          const openIds = Array.from(new Set([...(curr.openFileIds || []), newActiveId]));
-          return {
-            ...curr,
-            files: mergedFiles,
-            activeFileId: newActiveId,
-            openFileIds: openIds,
-            updatedAt: new Date().toISOString(),
-          };
-        }
-        return curr;
-      });
-
-      setIsFileExplorerOpen(true);
-      showToast(`Imported ${filesList.length} file(s) into current project.`, "success");
-    } else {
-      // Import as standalone individual files
-      filesList.forEach((f, idx) => {
-        const cleanName = f.name;
-        const fileLang = getFileLanguage(cleanName, "python");
-        const starter = typeof f.content === "string" ? f.content : "";
-        const entryId = `file-${crypto.randomUUID().substring(0, 8)}`;
-        const newProj = {
-          id: crypto.randomUUID(),
-          name: cleanName,
-          isSingleFile: true,
-          language: fileLang,
-          ...starterCode,
-          [fileLang]: starter,
-          activeFileId: entryId,
-          openFileIds: [entryId],
-          files: [
-            { id: entryId, name: cleanName, content: starter, isEntry: true, isStandalone: true }
-          ],
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-        if (idx === 0) {
-          setProject(newProj);
-          try {
-            localStorage.setItem(ACTIVE_KEY, newProj.id);
-          } catch {}
-        }
-        setProjects((prev) => {
-          const updated = [newProj, ...prev];
-          try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-          } catch {}
-          return updated;
-        });
-      });
-
-      setIsFileExplorerOpen(true);
-      showToast(`Imported ${filesList.length} file(s).`, "success");
-    }
-  }, [project, showToast, setIsFileExplorerOpen]);
-
-  const deleteProject = useCallback(
-    (id) => {
-      const targetProj = projects.find((p) => p.id === id);
-      const name = targetProj?.name || "this project";
-      const confirmed = window.confirm(`Delete project "${name}"?\nThis action cannot be undone.`);
-      if (!confirmed) return;
-
-      setProjects((previous) => {
-        const remaining = previous.filter((item) => item.id !== id);
-        try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(remaining));
-        } catch {}
-        if (project?.id === id) {
-          const next = remaining[0] || null;
-          setProject(next);
-          try {
-            if (next) {
-              localStorage.setItem(ACTIVE_KEY, next.id);
-            } else {
-              localStorage.removeItem(ACTIVE_KEY);
-            }
-          } catch {}
-        }
-        return remaining;
-      });
-      showToast(`Deleted project "${name}".`, "info");
-    },
-    [project?.id, projects, showToast]
-  );
-
+  // Stop running execution process
   const stopExecution = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
     if (activeSessionRef.current) {
       if (typeof activeSessionRef.current.kill === "function") {
         activeSessionRef.current.kill();
@@ -1484,6 +544,7 @@ export function EditorProvider({ children }) {
     }));
   }, []);
 
+  // Interactive stdin input sender
   const sendTerminalInput = useCallback((value) => {
     if (activeSessionRef.current) {
       if (typeof activeSessionRef.current.sendStdin === "function") {
@@ -1495,29 +556,409 @@ export function EditorProvider({ children }) {
     }
   }, []);
 
-  const handleTerminalPaste = useCallback((pastedText) => {
-    if (!pastedText) return;
-    const lines = pastedText.split(/\r?\n/);
-    if (lines.length === 0) return;
+  // Project and file management operations
+  const createProject = useCallback((name = "Untitled Project", language = "python") => {
+    const newProj = makeProject(name, language);
+    setProject(newProj);
+    persistProject(newProj);
+    showToast(`Created project "${name}".`, "success");
+    return newProj;
+  }, [persistProject, showToast]);
 
-    if (activeSessionRef.current) {
-      const firstLine = lines[0];
-      const remainingLines = lines.slice(1);
-      if (typeof activeSessionRef.current.sendStdin === "function") {
-        activeSessionRef.current.sendStdin(firstLine + "\n");
+  const openProject = useCallback((projId) => {
+    const target = projects.find((p) => p.id === projId);
+    if (target) {
+      const ensured = ensureProjectFiles(target);
+      setProject(ensured);
+      try {
+        localStorage.setItem(ACTIVE_KEY, target.id);
+      } catch (e) {
+        // ignore
       }
-      setTerminalHistory((prev) => [...prev, `${activePrompt}${firstLine}`]);
-      setActivePrompt("");
-      setIsWaitingForInput(false);
-      pendingPasteQueueRef.current = remainingLines;
+      showToast(`Switched to "${target.name}".`, "info");
     }
-  }, [activePrompt]);
+  }, [projects, showToast]);
 
+  const renameProject = useCallback((id, newName) => {
+    setProjects((prev) => {
+      const updated = prev.map((p) => (p.id === id ? { ...p, name: newName } : p));
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+      } catch (e) {
+        // ignore
+      }
+      return updated;
+    });
+    setProject((curr) => (curr && curr.id === id ? { ...curr, name: newName } : curr));
+  }, []);
+
+  const deleteProject = useCallback((id) => {
+    const targetProj = projects.find((p) => p.id === id);
+    const name = targetProj?.name || "this project";
+    setProjects((previous) => {
+      const remaining = previous.filter((item) => item.id !== id);
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(remaining));
+      } catch (e) {
+        // ignore
+      }
+      if (project?.id === id) {
+        const next = remaining[0] || makeProject("My Project", "python");
+        setProject(next);
+        try {
+          localStorage.setItem(ACTIVE_KEY, next.id);
+        } catch (e) {
+          // ignore
+        }
+      }
+      return remaining;
+    });
+    showToast(`Deleted project "${name}".`, "info");
+  }, [project?.id, projects, showToast]);
+
+  const importProject = useCallback((imported) => {
+    if (!imported || !imported.name) return;
+    const ensured = ensureProjectFiles(imported);
+    setProject(ensured);
+    persistProject(ensured);
+    showToast(`Imported project "${ensured.name}".`, "success");
+  }, [persistProject, showToast]);
+
+  const importLocalFolder = useCallback((folderName, filesList) => {
+    if (!Array.isArray(filesList) || filesList.length === 0) return;
+    const entryFile = filesList[0];
+    const detectedLang = getFileLanguage(entryFile.name, "javascript");
+
+    const newProj = {
+      id: crypto.randomUUID(),
+      name: folderName || "Imported Project",
+      language: detectedLang,
+      ...starterCode,
+      activeFileId: entryFile.id || `file-${crypto.randomUUID().substring(0, 8)}`,
+      openFileIds: filesList.map((f, i) => f.id || `file-${i}`),
+      files: filesList.map((f, i) => ({
+        id: f.id || `file-${i}`,
+        name: f.name,
+        content: f.content || "",
+        isEntry: i === 0,
+      })),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    setProject(newProj);
+    persistProject(newProj);
+    showToast(`Imported folder "${folderName}" (${filesList.length} files).`, "success");
+  }, [persistProject, showToast]);
+
+  const importLocalFiles = useCallback((filesList) => {
+    if (!Array.isArray(filesList) || filesList.length === 0) return;
+    setProject((curr) => {
+      if (!curr) return makeProject("Imported Files", "javascript");
+      const currentFiles = curr.files || [];
+      const newFiles = filesList.map((f, i) => ({
+        id: `file-${crypto.randomUUID().substring(0, 8)}`,
+        name: f.name,
+        content: f.content,
+        isEntry: currentFiles.length === 0 && i === 0,
+      }));
+      const nextProj = {
+        ...curr,
+        files: [...currentFiles, ...newFiles],
+        openFileIds: [...(curr.openFileIds || []), ...newFiles.map((f) => f.id)],
+        activeFileId: newFiles[0]?.id || curr.activeFileId,
+        updatedAt: new Date().toISOString(),
+      };
+      persistProject(nextProj);
+      return nextProj;
+    });
+    showToast(`Added ${filesList.length} file(s) to project.`, "success");
+  }, [persistProject, showToast]);
+
+  const addProjectFile = useCallback((fileName, targetProjId = null) => {
+    if (!fileName) return;
+
+    const targetId = targetProjId || project?.id;
+    let targetProj = (projects || []).find((p) => p.id === targetId);
+    if (!targetProj && project?.id === targetId) {
+      targetProj = project;
+    }
+    const projLang = targetProj?.language || project?.language || "python";
+    const meta = languageMeta[projLang] || languageMeta.python;
+    const ext = meta.extension || "py";
+    const finalFileName = fileName.includes(".") ? fileName : `${fileName}.${ext}`;
+
+    const lang = getFileLanguage(finalFileName, projLang);
+    const starter = starterCode[lang] || "";
+    const newFile = {
+      id: `file-${crypto.randomUUID().substring(0, 8)}`,
+      name: finalFileName,
+      content: starter,
+      isEntry: false,
+    };
+
+    setProjects((prevProjects) => {
+      const list = prevProjects || [];
+      return list.map((p) => {
+        if (p.id === targetId) {
+          const files = p.files || [];
+          const updated = {
+            ...p,
+            files: [...files, newFile],
+            openFileIds: [...(p.openFileIds || []), newFile.id],
+            activeFileId: newFile.id,
+            updatedAt: new Date().toISOString(),
+          };
+          persistProject(updated);
+          return updated;
+        }
+        return p;
+      });
+    });
+
+    setProject((curr) => {
+      const activeIsTarget = !targetProjId || curr?.id === targetProjId;
+      if (activeIsTarget && curr) {
+        const nextProj = {
+          ...curr,
+          files: [...(curr.files || []), newFile],
+          openFileIds: [...(curr.openFileIds || []), newFile.id],
+          activeFileId: newFile.id,
+          updatedAt: new Date().toISOString(),
+        };
+        persistProject(nextProj);
+        try {
+          localStorage.setItem(ACTIVE_KEY, nextProj.id);
+        } catch (_e) {}
+        return nextProj;
+      } else if (targetProj) {
+        const ensured = ensureProjectFiles(targetProj);
+        const nextProj = {
+          ...ensured,
+          files: [...(ensured.files || []), newFile],
+          openFileIds: [...(ensured.openFileIds || []), newFile.id],
+          activeFileId: newFile.id,
+          updatedAt: new Date().toISOString(),
+        };
+        persistProject(nextProj);
+        try {
+          localStorage.setItem(ACTIVE_KEY, nextProj.id);
+        } catch (_e) {}
+        return nextProj;
+      }
+      return curr;
+    });
+
+    showToast(`Created subfile "${finalFileName}".`, "success");
+    return newFile;
+  }, [persistProject, project, projects, showToast]);
+
+  const selectProjectFile = useCallback((fileId) => {
+    setProject((current) => {
+      if (!current) return current;
+      const ensured = ensureProjectFiles(current);
+      const target = (ensured.files || []).find((f) => f.id === fileId);
+      if (!target) return current;
+      const targetLang = getFileLanguage(target.name, ensured.language);
+      const openIds = ensured.openFileIds || [];
+      const updatedOpen = openIds.includes(fileId) ? openIds : [...openIds, fileId];
+      const nextProj = {
+        ...ensured,
+        language: targetLang || ensured.language,
+        activeFileId: fileId,
+        openFileIds: updatedOpen,
+      };
+      persistProject(nextProj);
+      return nextProj;
+    });
+  }, [persistProject]);
+
+  const closeEditorTab = useCallback((fileId) => {
+    setProject((current) => {
+      if (!current) return current;
+      const openIds = (current.openFileIds || []).filter((id) => id !== fileId);
+      let nextActive = current.activeFileId;
+      if (nextActive === fileId) {
+        nextActive = openIds[openIds.length - 1] || current.files?.[0]?.id || null;
+      }
+      return {
+        ...current,
+        openFileIds: openIds,
+        activeFileId: nextActive,
+      };
+    });
+  }, []);
+
+  const deleteProjectFile = useCallback((fileId, targetProjId = null) => {
+    const projId = targetProjId || project?.id;
+    setProjects((prev) =>
+      (prev || []).map((p) => {
+        if (p.id === projId) {
+          const remainingFiles = (p.files || []).filter((f) => f.id !== fileId);
+          const remainingOpenIds = (p.openFileIds || []).filter((id) => id !== fileId);
+          const nextActiveId = p.activeFileId === fileId ? remainingFiles[0]?.id : p.activeFileId;
+          const updated = {
+            ...p,
+            files: remainingFiles,
+            openFileIds: remainingOpenIds.length > 0 ? remainingOpenIds : [remainingFiles[0]?.id],
+            activeFileId: nextActiveId,
+            updatedAt: new Date().toISOString(),
+          };
+          persistProject(updated);
+          return updated;
+        }
+        return p;
+      })
+    );
+
+    setProject((current) => {
+      if (!current || (current.id !== projId && targetProjId)) return current;
+      if ((current.files || []).length <= 1) {
+        showToast("Cannot delete the only file in a project.", "warning");
+        return current;
+      }
+      const target = current.files.find((f) => f.id === fileId);
+      const remainingFiles = current.files.filter((f) => f.id !== fileId);
+      const remainingOpenIds = (current.openFileIds || []).filter((id) => id !== fileId);
+      const nextActiveId = current.activeFileId === fileId ? remainingFiles[0]?.id : current.activeFileId;
+
+      const nextProj = {
+        ...current,
+        files: remainingFiles,
+        openFileIds: remainingOpenIds.length > 0 ? remainingOpenIds : [remainingFiles[0]?.id],
+        activeFileId: nextActiveId,
+        updatedAt: new Date().toISOString(),
+      };
+      persistProject(nextProj);
+      showToast(`Deleted file "${target?.name || "file"}".`, "info");
+      return nextProj;
+    });
+  }, [persistProject, project?.id, showToast]);
+
+  const renameProjectFile = useCallback((fileId, newName, targetProjId = null) => {
+    if (!newName) return;
+    const projId = targetProjId || project?.id;
+    setProjects((prev) =>
+      (prev || []).map((p) => {
+        if (p.id === projId) {
+          const updatedFiles = (p.files || []).map((f) => (f.id === fileId ? { ...f, name: newName } : f));
+          const updated = { ...p, files: updatedFiles, updatedAt: new Date().toISOString() };
+          persistProject(updated);
+          return updated;
+        }
+        return p;
+      })
+    );
+    setProject((current) => {
+      if (!current || (current.id !== projId && targetProjId)) return current;
+      const updatedFiles = (current.files || []).map((f) =>
+        f.id === fileId ? { ...f, name: newName } : f
+      );
+      const nextProj = {
+        ...current,
+        files: updatedFiles,
+        updatedAt: new Date().toISOString(),
+      };
+      persistProject(nextProj);
+      return nextProj;
+    });
+  }, [persistProject, project?.id]);
+
+  const switchToFile = useCallback((projectIdOrFileId, fileId = null) => {
+    if (fileId) {
+      const targetProj = projects.find((p) => p.id === projectIdOrFileId);
+      if (targetProj) {
+        const ensured = ensureProjectFiles(targetProj);
+        const openIds = Array.isArray(ensured.openFileIds) ? ensured.openFileIds : [];
+        const updatedOpen = openIds.includes(fileId) ? openIds : [...openIds, fileId];
+        const targetFile = ensured.files?.find((f) => f.id === fileId);
+        const targetLang = targetFile ? getFileLanguage(targetFile.name, ensured.language) : ensured.language;
+        const nextProj = {
+          ...ensured,
+          language: targetLang,
+          activeFileId: fileId,
+          openFileIds: updatedOpen,
+        };
+        setProject(nextProj);
+        persistProject(nextProj);
+        try {
+          localStorage.setItem(ACTIVE_KEY, nextProj.id);
+        } catch (_e) {}
+        return;
+      }
+    }
+
+    const targetProj = projects.find((p) => p.id === projectIdOrFileId);
+    if (targetProj) {
+      const ensured = ensureProjectFiles(targetProj);
+      const activeFileObj = (ensured.files || []).find((f) => f.id === ensured.activeFileId) || ensured.files?.[0];
+      const targetLang = activeFileObj ? getFileLanguage(activeFileObj.name, ensured.language) : ensured.language;
+      const nextProj = {
+        ...ensured,
+        language: targetLang,
+      };
+      setProject(nextProj);
+      persistProject(nextProj);
+      try {
+        localStorage.setItem(ACTIVE_KEY, nextProj.id);
+      } catch (_e) {}
+      return;
+    }
+
+    selectProjectFile(projectIdOrFileId);
+  }, [projects, persistProject, selectProjectFile]);
+
+  const createIndividualFile = useCallback((fileName, content = null, lang = null) => {
+    if (!fileName) return null;
+    const detectedLang = lang || getFileLanguage(fileName, "python");
+    const starter = content !== null ? content : (starterCode[detectedLang] || "");
+    const fileId = `file-${crypto.randomUUID().substring(0, 8)}`;
+    const newFile = {
+      id: fileId,
+      name: fileName,
+      content: starter,
+      isEntry: true,
+    };
+    const newProj = {
+      id: `proj-${crypto.randomUUID().substring(0, 8)}`,
+      name: fileName,
+      language: detectedLang,
+      [detectedLang]: starter,
+      isSingleFile: true,
+      activeFileId: fileId,
+      openFileIds: [fileId],
+      files: [newFile],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    setProjects((prev) => [newProj, ...(prev || [])]);
+    setProject(newProj);
+    persistProject(newProj);
+    try {
+      localStorage.setItem(ACTIVE_KEY, newProj.id);
+    } catch (_e) {}
+    showToast(`Created file "${fileName}".`, "success");
+    return newProj;
+  }, [persistProject, showToast]);
+
+  const openCreateFileDialog = useCallback((mode = "file", lang = null) => {
+    const activeFileObj = project?.files?.find((f) => f.id === project?.activeFileId);
+    const currentLang = lang || (activeFileObj ? getFileLanguage(activeFileObj.name, null) : project?.language) || "python";
+    setProjectDialogMode(mode);
+    setProjectDialogLang(currentLang);
+    setProjectDialogOpen(true);
+  }, [project]);
+
+  const openNewFileInput = useCallback((mode = "file", lang = null) => {
+    openCreateFileDialog(mode, lang);
+  }, [openCreateFileDialog]);
+
+  // Execution Runner: sends code to backend and streams output
   const runCode = useCallback(async () => {
     if (isRunning) return;
 
     if (!project) {
-      showToast("Please select a language or create a file to run code.", "warning");
+      showToast("Please select a language or file to run code.", "warning");
       return;
     }
 
@@ -1531,29 +972,8 @@ export function EditorProvider({ children }) {
     const activeFileName = activeFileObj?.name || "";
     const activeFileLang = activeFileObj ? getFileLanguage(activeFileObj.name, null) : project?.language;
 
-    // Validate file extension before execution
-    if (!activeFileLang || !RUNNABLE_LANGUAGES.includes(activeFileLang)) {
-      const ext = activeFileName.includes(".") ? `.${activeFileName.split(".").pop()}` : "(no extension)";
-      const errorMsg = `Execution Error: Cannot execute file '${activeFileName}'. '${ext}' is not a valid runnable file extension.\n\nSupported runnable extensions:\n • Python (.py)\n • Java (.java)\n • JavaScript (.js)\n • HTML (.html)\n • CSS (.css)\n • C++ (.cpp)\n\nPlease create or select a file with a valid extension.`;
-
-      setOutput({
-        status: "INVALID_FILE_TYPE",
-        compilationStatus: "COMPILATION_ERROR",
-        executionStatus: "FAILED",
-        output: "",
-        error: errorMsg,
-        executionTime: 0,
-        memoryUsage: null,
-        exitCode: 1,
-        type: "error",
-        value: errorMsg,
-      });
-      setIsRunning(false);
-      return;
-    }
-
-    const language = activeFileLang;
-    const code = activeFileObj?.content ?? (project && project.language ? project[project.language] : "") ?? "";
+    const language = activeFileLang || project?.language || "python";
+    const code = activeFileObj?.content ?? (project && project[language] ? project[language] : "") ?? "";
     const projectFiles = (ensured.files || []).map((f) => ({
       name: f.name,
       content: f.content,
@@ -1587,132 +1007,67 @@ export function EditorProvider({ children }) {
         value: `${language.toUpperCase()} rendered successfully in preview panel.`,
       });
       setIsRunning(false);
-
-      // Post execution metric to monitoring server
-      try {
-        fetch("/api/compiler/run", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ language, code, files: projectFiles }),
-        }).catch(() => {});
-      } catch {}
       return;
     }
 
-    let accumulatedOutput = "";
-    let accumulatedError = "";
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
-    const session = connectInteractiveSession({
-      language,
-      code,
-      files: projectFiles,
-      input: stdin || "",
-      onStatus: (status) => {
-        setOutput((prev) => ({
-          ...prev,
-          status: status === "RUNNING" ? "RUNNING" : prev.status,
-          executionStatus: status === "RUNNING" ? "RUNNING" : prev.executionStatus,
-        }));
-      },
-      onPrompt: (promptText) => {
-        setActivePrompt(promptText || "");
-        setIsWaitingForInput(true);
-        if (promptText) {
-          setTerminalHistory((prev) => [...prev, promptText]);
-        }
-      },
-      onStdout: (text) => {
-        accumulatedOutput += text;
-        setOutput((prev) => ({
-          ...prev,
-          output: accumulatedOutput,
-          value: accumulatedOutput,
-        }));
-      },
-      onStderr: (text) => {
-        accumulatedError += (accumulatedError ? "\n" : "") + text;
-        setOutput((prev) => ({
-          ...prev,
-          error: accumulatedError,
-        }));
-      },
-      onComplete: (result) => {
-        setIsRunning(false);
-        setIsWaitingForInput(false);
-        setActivePrompt("");
-        activeSessionRef.current = null;
+    try {
+      const res = await executeCode(language, code, stdin || "", {
+        signal: controller.signal,
+      });
 
-        const isSuccess = result.status === "SUCCESS" || result.exitCode === 0;
-        const finalOutput = result.output || accumulatedOutput || "";
-        const finalError = result.error || accumulatedError || null;
+      const isSuccess = res.status === "SUCCESS" || res.success;
+      const finalOutput = res.output !== undefined && res.output !== null ? res.output : "";
+      const finalError = res.error || null;
 
-        setOutput({
-          status: result.status || (isSuccess ? "SUCCESS" : "RUNTIME_ERROR"),
-          compilationStatus: result.compilationStatus || (result.status === "COMPILATION_ERROR" ? "COMPILATION_ERROR" : "SUCCESS"),
-          executionStatus: result.executionStatus || (isSuccess ? "SUCCESS" : "RUNTIME_ERROR"),
-          output: finalOutput,
-          error: finalError,
-          executionTime: result.executionTime !== undefined ? result.executionTime : null,
-          memoryUsage: result.memoryUsage || null,
-          exitCode: result.exitCode !== undefined ? result.exitCode : (isSuccess ? 0 : 1),
-          type: isSuccess ? "success" : "error",
-          value: finalOutput || finalError || "",
-        });
-      },
-      onError: (err) => {
-        console.warn("Interactive session WS error, falling back to HTTP execution:", err);
-        executeCode(language, code, stdin || "")
-          .then((res) => {
-            setOutput({
-              status: res.status || (res.success ? "SUCCESS" : "SYSTEM_ERROR"),
-              compilationStatus: res.compilationStatus,
-              executionStatus: res.executionStatus,
-              output: res.output || "",
-              error: res.error || null,
-              executionTime: res.executionTime !== undefined ? res.executionTime : null,
-              memoryUsage: res.memoryUsage || null,
-              exitCode: res.exitCode !== undefined ? res.exitCode : null,
-              type: res.status === "SUCCESS" ? "success" : "error",
-              value: res.output || res.error || "",
-            });
-          })
-          .catch((httpErr) => {
-            const errMessage = httpErr.response?.data?.error || httpErr.message || "Failed to execute code";
-            setOutput({
-              status: "SYSTEM_ERROR",
-              compilationStatus: null,
-              executionStatus: null,
-              output: "",
-              error: errMessage,
-              executionTime: null,
-              memoryUsage: null,
-              exitCode: 1,
-              type: "error",
-              value: errMessage,
-            });
-          })
-          .finally(() => {
-            setIsRunning(false);
-            setIsWaitingForInput(false);
-            setActivePrompt("");
-            activeSessionRef.current = null;
-          });
-      },
-    });
-
-    activeSessionRef.current = session;
-  }, [isRunning, project, clearTerminal, stdin]);
-
-  const runInteractiveCode = runCode;
+      setOutput({
+        status: res.status || (isSuccess ? "SUCCESS" : "RUNTIME_ERROR"),
+        compilationStatus: res.compilationStatus || (res.status === "COMPILATION_ERROR" ? "COMPILATION_ERROR" : "SUCCESS"),
+        executionStatus: res.executionStatus || (isSuccess ? "SUCCESS" : "RUNTIME_ERROR"),
+        output: finalOutput,
+        error: finalError,
+        executionTime: res.executionTime !== undefined ? res.executionTime : null,
+        memoryUsage: res.memoryUsage || null,
+        exitCode: res.exitCode !== undefined ? res.exitCode : (isSuccess ? 0 : 1),
+        type: isSuccess ? "success" : "error",
+        value: finalOutput || finalError || "",
+      });
+    } catch (httpErr) {
+      if (httpErr.name === "CanceledError" || httpErr.code === "ERR_CANCELED") {
+        return;
+      }
+      const errMessage = httpErr.response?.data?.error || httpErr.message || "Failed to execute code";
+      setOutput({
+        status: httpErr.response?.data?.status || "SYSTEM_ERROR",
+        compilationStatus: null,
+        executionStatus: null,
+        output: "",
+        error: errMessage,
+        executionTime: null,
+        memoryUsage: null,
+        exitCode: 1,
+        type: "error",
+        value: errMessage,
+      });
+    } finally {
+      setIsRunning(false);
+      setIsWaitingForInput(false);
+      setActivePrompt("");
+      abortControllerRef.current = null;
+    }
+  }, [isRunning, project, clearTerminal, stdin, showToast]);
 
   const value = {
     // Navigation
     activeNav,
     setActiveNav,
 
-    // P0 Compiler
+    // P0 Compiler State
     projects,
     project,
+    activeFile,
     setLanguage,
     updateCode,
     resetCurrentFile,
@@ -1723,7 +1078,10 @@ export function EditorProvider({ children }) {
     clearOutput,
     isRunning,
     runCode,
-    runInteractiveCode,
+    runInteractiveCode: runCode,
+    stopExecution,
+
+    // File Explorer & Workspaces
     isProjectDialogOpen,
     setProjectDialogOpen,
     projectDialogMode,
@@ -1734,54 +1092,10 @@ export function EditorProvider({ children }) {
     createProject,
     openProject,
     renameProject,
+    deleteProject,
     importProject,
     importLocalFolder,
     importLocalFiles,
-    deleteProject,
-    terminalHistory,
-    activePrompt,
-    isWaitingForInput,
-    sendTerminalInput,
-    handleTerminalPaste,
-    clearTerminal,
-    stopExecution,
-
-    // P2 DX & Multi-File
-    theme,
-    setTheme,
-    toast,
-    showToast,
-    editorSettings,
-    updateEditorSettings,
-    isFullscreen,
-    toggleFullscreen,
-    isCommandPaletteOpen,
-    setCommandPaletteOpen,
-    isSettingsOpen,
-    // Profile, Notifications & Settings
-    profile,
-    updateProfile,
-    activityStats,
-    recordActivity,
-    problemsSolvedCount,
-    notifications,
-    unreadCount,
-    addNotification,
-    markNotificationRead,
-    markAllNotificationsRead,
-    clearNotifications,
-    compilerSettings,
-    updateCompilerSettings,
-    notificationSettings,
-    updateNotificationSettings,
-    accentColor,
-    setAccentColor,
-    resetPreferences,
-
-    setSettingsOpen,
-    targetErrorLine,
-    jumpToErrorLine,
-    activeFile,
     addProjectFile,
     deleteProjectFile,
     renameProjectFile,
@@ -1795,41 +1109,55 @@ export function EditorProvider({ children }) {
     createIndividualFile,
     switchToFile,
 
-    // P1 Online Judge
-    problemsList,
-    practiceViewMode,
-    setPracticeViewMode,
-    selectedProblemId,
-    selectedProblem,
-    practiceLang,
-    changePracticeLanguage,
-    practiceCode,
-    handlePracticeCodeChange,
-    draftStatus,
-    lastSavedTime,
-    loadProblem,
-    openProblem,
-    backToProblemCatalog,
-    goToPrevProblem,
-    goToNextProblem,
-    pickRandomProblem,
-    resetPracticeStarterCode,
-    reloadProblems,
-    runJudge,
-    runJudgeCustom,
-    submitJudge,
-    isJudgeRunning,
-    isJudgeSubmitting,
-    runResults,
-    customInput,
-    setCustomInput,
-    customResult,
-    submissionResult,
-    setSubmissionResult,
-    submissionsList,
-    activeSubmissionModal,
-    setActiveSubmissionModal,
-    restorePreviousCode,
+    // Terminal Streaming
+    terminalHistory,
+    activePrompt,
+    isWaitingForInput,
+    sendTerminalInput,
+    clearTerminal,
+
+    // Fullscreen Workspace
+    isFullscreen,
+    toggleFullscreen,
+    setIsFullscreen,
+
+    // Confirmation Modals (Clear, Reset, etc.)
+    confirmModal,
+    openConfirmModal,
+    closeConfirmModal,
+
+    // Preferences & Settings
+    theme,
+    setTheme,
+    accentColor,
+    setAccentColor,
+    resetPreferences,
+    editorSettings,
+    updateEditorSettings,
+    compilerSettings,
+    updateCompilerSettings,
+    notificationSettings,
+    updateNotificationSettings,
+    toast,
+    showToast,
+    isCommandPaletteOpen,
+    setCommandPaletteOpen,
+    isSettingsOpen,
+    setSettingsOpen,
+    targetErrorLine,
+    jumpToErrorLine,
+
+    // Profile & Notifications
+    profile,
+    updateProfile,
+    notifications,
+    unreadCount,
+    markNotificationRead,
+    markAllNotificationsRead,
+    clearNotifications,
+
+    // Real Language Availability
+    availableRuntimes,
   };
 
   return <EditorContext.Provider value={value}>{children}</EditorContext.Provider>;
@@ -1840,5 +1168,3 @@ export function useEditor() {
   if (!context) throw new Error("useEditor must be used inside EditorProvider");
   return context;
 }
-
-

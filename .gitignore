@@ -60,3 +60,7 @@ Thumbs.db
 
 # Vercel deployment artifacts
 .vercel/
+
+# Test execution reports
+test-reports/
+

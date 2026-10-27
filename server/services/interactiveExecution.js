@@ -12,7 +12,6 @@ const { LANGUAGE_CONFIG } = require("../config/languages");
 const { createExecutionWorkspace, cleanupWorkspace } = require("../utils/tempManager");
 const { killProcessTree } = require("../utils/processRunner");
 const { sanitizeOutput } = require("../utils/sanitizer");
-const { recordExecutionMetric } = require("./metricsService");
 
 const PYTHON_BOOTSTRAP_CODE = `
 import sys, builtins
@@ -51,6 +50,8 @@ function startInteractiveSession({
   code,
   files = [],
   initialInput = "",
+  interactive = false,
+  closeStdin = false,
   onPrompt = () => {},
   onStdout = () => {},
   onStderr = () => {},
@@ -60,13 +61,6 @@ function startInteractiveSession({
   const config = LANGUAGE_CONFIG[normalizedLang];
 
   const onComplete = (result) => {
-    recordExecutionMetric({
-      language: normalizedLang,
-      mode: "interactive",
-      status: result.status,
-      executionTime: result.executionTime,
-      exitCode: result.exitCode,
-    });
     rawOnComplete(result);
   };
 
@@ -78,7 +72,7 @@ function startInteractiveSession({
       executionTime: 0,
       exitCode: 1,
     });
-    return { writeStdin: () => {}, kill: () => {} };
+    return { writeStdin: () => {}, endStdin: () => {}, kill: () => {} };
   }
 
   // Handle preview languages
@@ -90,7 +84,7 @@ function startInteractiveSession({
       executionTime: 0,
       exitCode: 0,
     });
-    return { writeStdin: () => {}, kill: () => {} };
+    return { writeStdin: () => {}, endStdin: () => {}, kill: () => {} };
   }
 
   const detection = config.detect ? config.detect() : { available: false };
@@ -102,11 +96,12 @@ function startInteractiveSession({
       executionTime: 0,
       exitCode: 1,
     });
-    return { writeStdin: () => {}, kill: () => {} };
+    return { writeStdin: () => {}, endStdin: () => {}, kill: () => {} };
   }
 
   const workspace = createExecutionWorkspace(config.defaultFileName, code, files);
   let child = null;
+  let activeCompileProcess = null;
   let isSettled = false;
   let totalOutputBytes = 0;
   let accumulatedStdout = "";
@@ -118,6 +113,7 @@ function startInteractiveSession({
     if (timeoutTimer) clearTimeout(timeoutTimer);
     timeoutTimer = setTimeout(() => {
       if (isSettled) return;
+      if (activeCompileProcess) killProcessTree(activeCompileProcess.pid);
       if (child) killProcessTree(child.pid);
       isSettled = true;
       const endTime = process.hrtime.bigint();
@@ -137,8 +133,34 @@ function startInteractiveSession({
 
   resetTimeout();
 
+  const writeStdin = (data) => {
+    if (child && child.stdin && !child.stdin.destroyed && !isSettled) {
+      resetTimeout();
+      try {
+        child.stdin.write(data);
+      } catch (e) {}
+    }
+  };
+
+  const endStdin = () => {
+    if (child && child.stdin && !child.stdin.destroyed && !isSettled) {
+      try {
+        child.stdin.end();
+      } catch (e) {}
+    }
+  };
+
+  const kill = () => {
+    if (timeoutTimer) clearTimeout(timeoutTimer);
+    isSettled = true;
+    if (activeCompileProcess) killProcessTree(activeCompileProcess.pid);
+    if (child) killProcessTree(child.pid);
+    cleanupWorkspace(workspace.runDir);
+  };
+
+  const extraBin = detection.binDir || (detection.linkerBinDir ? detection.linkerBinDir : null);
   const safeEnv = {
-    PATH: process.env.PATH,
+    PATH: extraBin ? `${extraBin}${path.delimiter}${process.env.PATH || ""}` : process.env.PATH,
     PATHEXT: process.env.PATHEXT,
     SYSTEMROOT: process.env.SYSTEMROOT,
     WINDIR: process.env.WINDIR,
@@ -167,6 +189,13 @@ function startInteractiveSession({
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
+  } else if (normalizedLang === "typescript") {
+    child = spawn(detection.command, ["--experimental-strip-types", "--max-old-space-size=128", config.defaultFileName], {
+      cwd: workspace.runDir,
+      env: safeEnv,
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
   } else if (normalizedLang === "java") {
     // For Java, first compile then run
     const publicClassMatch = code.match(/public\s+class\s+([A-Za-z0-9_$]+)/);
@@ -179,10 +208,12 @@ function startInteractiveSession({
       env: safeEnv,
       windowsHide: true,
     });
+    activeCompileProcess = compileProcess;
 
     let compileErr = "";
     compileProcess.stderr.on("data", (c) => (compileErr += c.toString()));
     compileProcess.on("close", (cCode) => {
+      activeCompileProcess = null;
       if (cCode !== 0) {
         isSettled = true;
         clearTimeout(timeoutTimer);
@@ -200,7 +231,8 @@ function startInteractiveSession({
         });
       }
 
-      child = spawn(detection.java, ["-Xmx128m", "-cp", ".", className], {
+      resetTimeout();
+      child = spawn(detection.java, ["-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8", "-Xmx128m", "-cp", ".", className], {
         cwd: workspace.runDir,
         env: safeEnv,
         windowsHide: true,
@@ -208,23 +240,298 @@ function startInteractiveSession({
       });
       attachChildHandlers();
     });
-    return {
-      writeStdin: (data) => {
-        if (child && child.stdin && !child.stdin.destroyed && !isSettled) {
-          resetTimeout();
-          try {
-            child.stdin.write(data);
-          } catch (e) {}
-        }
-      },
-      kill: () => {
-        if (timeoutTimer) clearTimeout(timeoutTimer);
+    return { writeStdin, endStdin, kill };
+  } else if (normalizedLang === "csharp") {
+    const csFile = "Program.cs";
+    fs.writeFileSync(path.join(workspace.runDir, csFile), code, "utf8");
+    const exeFile = path.join(workspace.runDir, "app.exe");
+
+    const compileProcess = spawn(detection.command, ["/nologo", "/target:exe", `/out:${exeFile}`, csFile], {
+      cwd: workspace.runDir,
+      env: safeEnv,
+      windowsHide: true,
+    });
+    activeCompileProcess = compileProcess;
+
+    let compileErr = "";
+    compileProcess.stderr.on("data", (c) => (compileErr += c.toString()));
+    compileProcess.stdout.on("data", (c) => (compileErr += c.toString()));
+
+    compileProcess.on("close", (cCode) => {
+      activeCompileProcess = null;
+      if (cCode !== 0) {
         isSettled = true;
-        if (compileProcess) killProcessTree(compileProcess.pid);
-        if (child) killProcessTree(child.pid);
+        clearTimeout(timeoutTimer);
         cleanupWorkspace(workspace.runDir);
-      },
+        const endTime = process.hrtime.bigint();
+        const executionTime = Number(endTime - startTime) / 1e9;
+        return onComplete({
+          status: "COMPILATION_ERROR",
+          compilationStatus: "COMPILATION_ERROR",
+          executionStatus: null,
+          output: "",
+          error: sanitizeOutput(compileErr, workspace.runDir, csFile),
+          executionTime: Math.round(executionTime * 1000) / 1000,
+          exitCode: cCode,
+        });
+      }
+
+      resetTimeout();
+      child = spawn(exeFile, [], {
+        cwd: workspace.runDir,
+        env: safeEnv,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      attachChildHandlers();
+    });
+
+    return { writeStdin, endStdin, kill };
+  } else if (normalizedLang === "c") {
+    const cFile = "main.c";
+    fs.writeFileSync(path.join(workspace.runDir, cFile), code, "utf8");
+    const exeFile = path.join(workspace.runDir, "main.exe");
+    const compileCmd = detection.command || "gcc";
+
+    const compileProcess = spawn(compileCmd, ["main.c", "-o", "main.exe"], {
+      cwd: workspace.runDir,
+      env: safeEnv,
+      windowsHide: true,
+    });
+
+    let compileErr = "";
+    compileProcess.stderr.on("data", (c) => (compileErr += c.toString()));
+    compileProcess.stdout.on("data", (c) => (compileErr += c.toString()));
+
+    compileProcess.on("close", (cCode) => {
+      activeCompileProcess = null;
+      if (cCode !== 0) {
+        isSettled = true;
+        clearTimeout(timeoutTimer);
+        cleanupWorkspace(workspace.runDir);
+        const endTime = process.hrtime.bigint();
+        const executionTime = Number(endTime - startTime) / 1e9;
+        return onComplete({
+          status: "COMPILATION_ERROR",
+          compilationStatus: "COMPILATION_ERROR",
+          executionStatus: null,
+          output: "",
+          error: sanitizeOutput(compileErr, workspace.runDir, cFile),
+          executionTime: Math.round(executionTime * 1000) / 1000,
+          exitCode: cCode,
+        });
+      }
+
+      resetTimeout();
+      child = spawn(exeFile, [], {
+        cwd: workspace.runDir,
+        env: safeEnv,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      attachChildHandlers();
+    });
+
+    return { writeStdin, endStdin, kill };
+  } else if (normalizedLang === "cpp") {
+    const cppFile = "main.cpp";
+    fs.writeFileSync(path.join(workspace.runDir, cppFile), code, "utf8");
+    const exeFile = path.join(workspace.runDir, "main.exe");
+    const compileCmd = detection.command || "g++";
+
+    const compileProcess = spawn(compileCmd, ["main.cpp", "-o", "main.exe"], {
+      cwd: workspace.runDir,
+      env: safeEnv,
+      windowsHide: true,
+    });
+
+    activeCompileProcess = compileProcess;
+
+    let compileErr = "";
+    compileProcess.stderr.on("data", (c) => (compileErr += c.toString()));
+    compileProcess.stdout.on("data", (c) => (compileErr += c.toString()));
+
+    compileProcess.on("close", (cCode) => {
+      activeCompileProcess = null;
+      if (cCode !== 0) {
+        isSettled = true;
+        clearTimeout(timeoutTimer);
+        cleanupWorkspace(workspace.runDir);
+        const endTime = process.hrtime.bigint();
+        const executionTime = Number(endTime - startTime) / 1e9;
+        return onComplete({
+          status: "COMPILATION_ERROR",
+          compilationStatus: "COMPILATION_ERROR",
+          executionStatus: null,
+          output: "",
+          error: sanitizeOutput(compileErr, workspace.runDir, cppFile),
+          executionTime: Math.round(executionTime * 1000) / 1000,
+          exitCode: cCode,
+        });
+      }
+
+      resetTimeout();
+      child = spawn(exeFile, [], {
+        cwd: workspace.runDir,
+        env: safeEnv,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      attachChildHandlers();
+    });
+
+    return { writeStdin, endStdin, kill };
+  } else if (normalizedLang === "go") {
+    const os = require("os");
+    const sharedGoCache = path.join(os.tmpdir(), "peaklyy-go-cache");
+    const goEnv = {
+      ...safeEnv,
+      GOCACHE: sharedGoCache,
+      GOTMPDIR: workspace.runDir,
     };
+    child = spawn(detection.command, ["run", "main.go"], {
+      cwd: workspace.runDir,
+      env: goEnv,
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } else if (normalizedLang === "rust") {
+    const rustFile = "main.rs";
+    fs.writeFileSync(path.join(workspace.runDir, rustFile), code, "utf8");
+    const exeFile = path.join(workspace.runDir, "main.exe");
+    const rustArgs = ["main.rs", "-o", "main.exe"];
+    if (detection.linkerBinDir) {
+      rustArgs.push("-C", `linker=${path.join(detection.linkerBinDir, "x86_64-w64-mingw32-clang.exe")}`);
+    }
+
+    const compileProcess = spawn(detection.command, rustArgs, {
+      cwd: workspace.runDir,
+      env: safeEnv,
+      windowsHide: true,
+    });
+
+    activeCompileProcess = compileProcess;
+
+    let compileErr = "";
+    compileProcess.stderr.on("data", (c) => (compileErr += c.toString()));
+    compileProcess.stdout.on("data", (c) => (compileErr += c.toString()));
+
+    compileProcess.on("close", (cCode) => {
+      activeCompileProcess = null;
+      if (cCode !== 0) {
+        isSettled = true;
+        clearTimeout(timeoutTimer);
+        cleanupWorkspace(workspace.runDir);
+        const endTime = process.hrtime.bigint();
+        const executionTime = Number(endTime - startTime) / 1e9;
+        return onComplete({
+          status: "COMPILATION_ERROR",
+          compilationStatus: "COMPILATION_ERROR",
+          executionStatus: null,
+          output: "",
+          error: sanitizeOutput(compileErr, workspace.runDir, rustFile),
+          executionTime: Math.round(executionTime * 1000) / 1000,
+          exitCode: cCode,
+        });
+      }
+
+      resetTimeout();
+      child = spawn(exeFile, [], {
+        cwd: workspace.runDir,
+        env: safeEnv,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      attachChildHandlers();
+    });
+
+    return { writeStdin, endStdin, kill };
+  } else if (normalizedLang === "php") {
+    child = spawn(detection.command, ["main.php"], {
+      cwd: workspace.runDir,
+      env: safeEnv,
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } else if (normalizedLang === "ruby") {
+    child = spawn(detection.command, ["main.rb"], {
+      cwd: workspace.runDir,
+      env: safeEnv,
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } else if (normalizedLang === "dart") {
+    child = spawn(detection.command, ["run", "main.dart"], {
+      cwd: workspace.runDir,
+      env: safeEnv,
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } else if (normalizedLang === "kotlin") {
+    const ktFile = "Main.kt";
+    fs.writeFileSync(path.join(workspace.runDir, ktFile), code, "utf8");
+    const jarFile = "app.jar";
+
+    const isWindows = process.platform === "win32";
+    const compileCmd = isWindows ? (process.env.COMSPEC || "cmd.exe") : detection.command;
+    const compileArgs = isWindows ? ["/c", `"${detection.command}"`, ktFile, "-include-runtime", "-d", jarFile] : [ktFile, "-include-runtime", "-d", jarFile];
+
+    const compileProcess = spawn(compileCmd, compileArgs, {
+      cwd: workspace.runDir,
+      env: safeEnv,
+      windowsHide: true,
+      windowsVerbatimArguments: isWindows,
+    });
+
+    activeCompileProcess = compileProcess;
+
+    let compileErr = "";
+    compileProcess.stderr.on("data", (c) => (compileErr += c.toString()));
+    compileProcess.stdout.on("data", (c) => (compileErr += c.toString()));
+
+    compileProcess.on("close", (cCode) => {
+      activeCompileProcess = null;
+      if (cCode !== 0) {
+        isSettled = true;
+        clearTimeout(timeoutTimer);
+        cleanupWorkspace(workspace.runDir);
+        const endTime = process.hrtime.bigint();
+        const executionTime = Number(endTime - startTime) / 1e9;
+        return onComplete({
+          status: "COMPILATION_ERROR",
+          compilationStatus: "COMPILATION_ERROR",
+          executionStatus: null,
+          output: "",
+          error: sanitizeOutput(compileErr, workspace.runDir, ktFile),
+          executionTime: Math.round(executionTime * 1000) / 1000,
+          exitCode: cCode,
+        });
+      }
+
+      resetTimeout();
+      const javaCmd = (LANGUAGE_CONFIG.java && LANGUAGE_CONFIG.java.detect && LANGUAGE_CONFIG.java.detect().java) || "java";
+      child = spawn(javaCmd, ["-jar", jarFile], {
+        cwd: workspace.runDir,
+        env: safeEnv,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      attachChildHandlers();
+    });
+
+    return { writeStdin, endStdin, kill };
+  } else {
+    isSettled = true;
+    clearTimeout(timeoutTimer);
+    cleanupWorkspace(workspace.runDir);
+    onComplete({
+      status: "SYSTEM_ERROR",
+      output: "",
+      error: `No interactive execution runner configured for language '${language}'.`,
+      executionTime: 0,
+      exitCode: 1,
+    });
+    return { writeStdin: () => {}, kill: () => {} };
   }
 
   function attachChildHandlers() {
@@ -232,10 +539,18 @@ function startInteractiveSession({
 
     if (child.stdin) {
       child.stdin.on("error", () => {});
-      if (initialInput) {
-        const normalized = initialInput.endsWith("\n") ? initialInput : `${initialInput}\n`;
-        child.stdin.write(normalized);
-      }
+      try {
+        if (initialInput && initialInput.length > 0) {
+          const normalized = initialInput.endsWith("\n") ? initialInput : `${initialInput}\n`;
+          if (!interactive || closeStdin) {
+            child.stdin.end(normalized, "utf8");
+          } else {
+            child.stdin.write(normalized, "utf8");
+          }
+        } else if (!interactive || closeStdin) {
+          child.stdin.end();
+        }
+      } catch (e) {}
     }
 
     child.stdout.on("data", (chunk) => {
@@ -358,22 +673,7 @@ function startInteractiveSession({
 
   attachChildHandlers();
 
-  return {
-    writeStdin: (data) => {
-      if (child && child.stdin && !child.stdin.destroyed && !isSettled) {
-        resetTimeout();
-        try {
-          child.stdin.write(data);
-        } catch (e) {}
-      }
-    },
-    kill: () => {
-      if (timeoutTimer) clearTimeout(timeoutTimer);
-      isSettled = true;
-      if (child) killProcessTree(child.pid);
-      cleanupWorkspace(workspace.runDir);
-    },
-  };
+  return { writeStdin, endStdin, kill };
 }
 
 module.exports = {

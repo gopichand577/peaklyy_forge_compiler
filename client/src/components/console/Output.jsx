@@ -10,21 +10,24 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useEditor } from "../../context/EditorContext";
 
-export default function Output() {
-  const { output, clearOutput, isRunning, jumpToErrorLine } = useEditor();
+export default function Output({ isFullscreenMode = false }) {
+  const { output, clearOutput, isRunning, jumpToErrorLine, openConfirmModal } = useEditor();
   const [activeTab, setActiveTab] = useState("console"); // 'console' | 'error' | 'info'
   const [copied, setCopied] = useState(false);
 
-  const handleCopy = () => {
-    let textToCopy = "";
-    if (activeTab === "error") {
-      textToCopy = output.error || "";
-    } else {
-      textToCopy = output.output || output.value || "";
+  useEffect(() => {
+    if (output.status === "COMPILATION_ERROR" || output.status === "RUNTIME_ERROR" || (output.error && !output.output)) {
+      setActiveTab("error");
+    } else if (output.status === "SUCCESS") {
+      setActiveTab("console");
     }
+  }, [output.status, output.error, output.output]);
+
+  const handleCopy = () => {
+    const textToCopy = activeTab === "error" ? (output.error || "") : (output.output || output.value || "");
 
     if (textToCopy) {
       navigator.clipboard.writeText(textToCopy).then(() => {
@@ -34,13 +37,24 @@ export default function Output() {
     }
   };
 
+  const handleClearClick = () => {
+    openConfirmModal({
+      title: "Clear Output Console?",
+      message: "This will clear all program output, error traces, and execution status. Your editor code and input will not be changed.",
+      confirmText: "Clear Console",
+      onConfirm: () => {
+        clearOutput();
+      },
+    });
+  };
+
   const renderFormattedLine = (line, idx) => {
     // Regex for line numbers: e.g. 'line 12' or ':12:' or ':12'
     const lineMatch = line.match(/(?:line\s+|:)(\d+)/i);
     const lineNum = lineMatch ? parseInt(lineMatch[1], 10) : null;
 
     return (
-      <div key={idx} className="output-console-line" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+      <div key={idx} className="output-console-line" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
         <span>{line}</span>
         {lineNum && lineNum > 0 && (
           <button
@@ -49,14 +63,15 @@ export default function Output() {
             onClick={() => jumpToErrorLine(lineNum)}
             title={`Jump to line ${lineNum} in editor`}
             style={{
-              padding: '1px 6px',
-              fontSize: '11px',
-              borderRadius: '4px',
-              background: 'rgba(255, 30, 60, 0.2)',
-              border: '1px solid rgba(255, 30, 60, 0.4)',
-              color: '#ff6b7b',
-              cursor: 'pointer',
-              marginLeft: 'auto'
+              padding: "1px 6px",
+              fontSize: "11px",
+              borderRadius: "4px",
+              background: "rgba(255, 30, 60, 0.2)",
+              border: "1px solid rgba(255, 30, 60, 0.4)",
+              color: "#ff6b7b",
+              cursor: "pointer",
+              marginLeft: "auto",
+              flexShrink: 0,
             }}
           >
             Line {lineNum} ↵
@@ -102,7 +117,7 @@ export default function Output() {
   const statusInfo = getStatusDisplay(output.status);
 
   return (
-    <section className="panel output-card">
+    <section className={`panel output-card ${isFullscreenMode ? "fullscreen-output-card" : ""}`}>
       <div className="panel-header output-tabs-header">
         {/* Output Console Tabs */}
         <div className="output-tabs-list">
@@ -135,23 +150,23 @@ export default function Output() {
           </button>
         </div>
 
-        {/* Right Action Stats */}
+        {/* Right Action Controls: Copy, Clear, and Status Pills */}
         <div className="output-stats-actions">
           <button
             type="button"
             className="output-clear-btn"
             onClick={handleCopy}
-            title="Copy current output"
+            title="Copy current output to clipboard"
           >
-            {copied ? <Check size={13} /> : <Copy size={13} />}
+            {copied ? <Check size={13} style={{ color: "#22c55e" }} /> : <Copy size={13} />}
             <span>{copied ? "Copied" : "Copy"}</span>
           </button>
 
           <button
             type="button"
-            className="output-clear-btn"
-            onClick={clearOutput}
-            title="Clear output"
+            className="output-clear-btn output-action-clear"
+            onClick={handleClearClick}
+            title="Clear output console"
           >
             <Trash2 size={13} />
             <span>Clear</span>
@@ -189,9 +204,11 @@ export default function Output() {
       <div className="output-console-body">
         {activeTab === "console" && (
           <div className="output-lines-container">
-            {output.output ? (
+            {output.output !== null && output.output !== undefined && output.output !== "" ? (
               renderFormattedOutput(output.output)
-            ) : output.value && output.status !== "RUNNING" && output.status !== "COMPILING" ? (
+            ) : output.status === "SUCCESS" ? (
+              <span className="output-placeholder" style={{ color: "#94a3b8" }}>Program executed successfully with no output.</span>
+            ) : output.value && output.status !== "RUNNING" && output.status !== "COMPILING" && output.value !== "Your program output will appear here." ? (
               renderFormattedOutput(output.value)
             ) : isRunning ? (
               <div className="output-loading-line">
@@ -228,7 +245,7 @@ export default function Output() {
               <strong>Execution Time:</strong> <span>{output.executionTime !== null && output.executionTime !== undefined ? `${output.executionTime}s` : "N/A"}</span>
             </div>
             <div className="info-row">
-              <strong>Memory Usage:</strong> <span>{output.memoryUsage || "N/A (unconstrained by OS)"}</span>
+              <strong>Memory Usage:</strong> <span>{output.memoryUsage || "N/A"}</span>
             </div>
             <div className="info-row">
               <strong>Exit Code:</strong> <span>{output.exitCode !== null && output.exitCode !== undefined ? output.exitCode : "N/A"}</span>
